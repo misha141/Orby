@@ -1,0 +1,12 @@
+[
+  {
+    "from": "Sarah",
+    "subject": "Project Update",
+    "snippet": "Can you send the latest update?"
+  },
+  {
+    "from": "Recruiter",
+    "subject": "Interview Scheduling",
+    "snippet": "Are you available tomorrow?"
+  }
+]
