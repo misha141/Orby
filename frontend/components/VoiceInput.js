@@ -1,12 +1,52 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react';
 
-export default function VoiceInput({ onTranscriptReady, onListeningChange, autoStartSignal = 0 }) {
+const VoiceInput = forwardRef(function VoiceInput(
+  { onTranscriptReady, onListeningChange, autoStartSignal = 0 },
+  ref
+) {
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [isSupported, setIsSupported] = useState(true);
   const recognitionRef = useRef(null);
   const finalTranscriptRef = useRef('');
   const latestTranscriptRef = useRef('');
+  const silenceTimerRef = useRef(null);
+
+  const SILENCE_TIMEOUT = 1800; // auto-stop after 1.8s of silence (Siri-like)
+
+  const clearSilenceTimer = () => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+  };
+
+  const startSilenceTimer = () => {
+    clearSilenceTimer();
+    silenceTimerRef.current = setTimeout(() => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+    }, SILENCE_TIMEOUT);
+  };
+
+  useImperativeHandle(ref, () => ({
+    startListening() {
+      if (recognitionRef.current && !isListening) {
+        try {
+          recognitionRef.current.start();
+        } catch (_e) {
+          // already started
+        }
+      }
+    },
+    stopListening() {
+      clearSilenceTimer();
+      if (recognitionRef.current && isListening) {
+        recognitionRef.current.stop();
+      }
+    }
+  }), [isListening]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -34,6 +74,8 @@ export default function VoiceInput({ onTranscriptReady, onListeningChange, autoS
       if (onListeningChange) {
         onListeningChange(true);
       }
+      // Start the silence timer immediately — if user says nothing, auto-stop
+      startSilenceTimer();
     };
 
     recognition.onresult = (event) => {
@@ -56,9 +98,13 @@ export default function VoiceInput({ onTranscriptReady, onListeningChange, autoS
       const combined = `${finalTranscriptRef.current} ${interim}`.trim();
       setTranscript(combined);
       latestTranscriptRef.current = combined;
+
+      // Reset the silence timer every time we get speech input
+      startSilenceTimer();
     };
 
     recognition.onend = () => {
+      clearSilenceTimer();
       setIsListening(false);
       if (onListeningChange) {
         onListeningChange(false);
@@ -71,6 +117,7 @@ export default function VoiceInput({ onTranscriptReady, onListeningChange, autoS
     };
 
     recognition.onerror = () => {
+      clearSilenceTimer();
       setIsListening(false);
       if (onListeningChange) {
         onListeningChange(false);
@@ -78,6 +125,10 @@ export default function VoiceInput({ onTranscriptReady, onListeningChange, autoS
     };
 
     recognitionRef.current = recognition;
+
+    return () => {
+      clearSilenceTimer();
+    };
   }, [onTranscriptReady, onListeningChange]);
 
   useEffect(() => {
@@ -99,6 +150,7 @@ export default function VoiceInput({ onTranscriptReady, onListeningChange, autoS
     }
 
     if (isListening) {
+      clearSilenceTimer();
       recognitionRef.current.stop();
       return;
     }
@@ -107,20 +159,20 @@ export default function VoiceInput({ onTranscriptReady, onListeningChange, autoS
   };
 
   return (
-    <div className="card">
+    <div className="card voiceCard">
       {!isSupported && (
         <p className="helpText">
           Speech recognition is not supported in this browser.
         </p>
       )}
-      <button className={`micButton ${isListening ? 'listening' : ''}`} type="button" onClick={toggleListening}>
-        {isListening ? 'Stop Listening' : '🎤 Talk to Orby'}
-      </button>
 
-      <div className="transcriptBox">
-        <h3>Transcript</h3>
-        <p>{transcript || 'Your spoken command will appear here.'}</p>
-      </div>
+      {transcript && (
+        <div className="transcriptBox">
+          <p>{transcript}</p>
+        </div>
+      )}
     </div>
   );
-}
+});
+
+export default VoiceInput;

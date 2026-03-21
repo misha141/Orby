@@ -66,8 +66,8 @@ async function executeAction(command) {
         status: 'success',
         message:
           source === 'gmail'
-            ? 'Here are your important emails from Gmail inbox'
-            : 'Here are your important emails',
+            ? 'Here are your emails prioritized from Gmail inbox'
+            : 'Here are your emails ranked by priority',
         summary,
         source
       };

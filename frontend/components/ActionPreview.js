@@ -21,7 +21,7 @@ export default function ActionPreview({ action, onConfirm, onCancel, loading }) 
   }
 
   if (intent === 'get_important_emails') {
-    previewText = 'Do you want Orby to summarize your important emails?';
+    previewText = 'Do you want Orby to check and prioritize your emails?';
   }
 
   return (

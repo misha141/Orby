@@ -1,7 +1,25 @@
-export default function OrbyAvatar({ isListening }) {
+export default function OrbyAvatar({ isListening, isSpeaking, isLoading }) {
+  const active = isListening || isSpeaking || isLoading;
+
+  const stateClass = isSpeaking
+    ? 'speaking'
+    : isListening
+    ? 'active'
+    : isLoading
+    ? 'processing'
+    : '';
+
+  const label = isSpeaking
+    ? 'Speaking...'
+    : isListening
+    ? 'Listening...'
+    : isLoading
+    ? 'Thinking...'
+    : 'Tap to speak';
+
   return (
     <section className="avatarPanel">
-      <div className={`orbyCore ${isListening ? 'active' : ''}`}>
+      <div className={`orbyCore ${stateClass}`}>
         <div className="orbyRing ring1" />
         <div className="orbyRing ring2" />
         <div className="orbyRing ring3" />
@@ -10,7 +28,7 @@ export default function OrbyAvatar({ isListening }) {
 
       <div className="avatarText">
         <h2>Orby</h2>
-        <p>{isListening ? 'I am listening...' : 'Ready when you are.'}</p>
+        <p>{label}</p>
       </div>
     </section>
   );
