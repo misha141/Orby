@@ -62,9 +62,16 @@ const VoiceInput = forwardRef(function VoiceInput(
     }
 
     const recognition = new SpeechRecognition();
-    recognition.continuous = true;
+    recognition.continuous = !conversationMode;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
+
+    recognition.onspeechend = () => {
+      if (!conversationMode) {
+        return;
+      }
+      recognition.stop();
+    };
 
     recognition.onstart = () => {
       setTranscript('');
@@ -110,6 +117,15 @@ const VoiceInput = forwardRef(function VoiceInput(
         onListeningChange(false);
       }
 
+      if (wasManualStop && onStopListening) {
+        onStopListening();
+      }
+
+      if (wasManualStop) {
+        // User manually stopped listening; do not process a command from partial transcript.
+        return;
+      }
+
       const finalText = finalTranscriptRef.current.trim() || latestTranscriptRef.current.trim();
       if (finalText) {
         onTranscriptReady(finalText);
@@ -130,6 +146,13 @@ const VoiceInput = forwardRef(function VoiceInput(
       clearSilenceTimer();
     };
   }, [onTranscriptReady, onListeningChange]);
+
+  useEffect(() => {
+    if (!recognitionRef.current) {
+      return;
+    }
+    recognitionRef.current.continuous = !conversationMode;
+  }, [conversationMode]);
 
   useEffect(() => {
     if (!autoStartSignal || !recognitionRef.current || isListening) {
@@ -155,6 +178,7 @@ const VoiceInput = forwardRef(function VoiceInput(
       return;
     }
 
+    manualStopRef.current = false;
     recognitionRef.current.start();
   };
 

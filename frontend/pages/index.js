@@ -19,6 +19,7 @@ export default function HomePage() {
     oauthConfigured: false,
     mockMode: false
   });
+  const [conversationListeningEnabled, setConversationListeningEnabled] = useState(false);
 
   const speakText = useCallback((text) => {
     if (typeof window === 'undefined' || !window.speechSynthesis || !text) {
