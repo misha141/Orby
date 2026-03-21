@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 
-export default function VoiceInput({ onTranscriptReady, onListeningChange, autoStartSignal = 0 }) {
+export default function VoiceInput({ onTranscriptReady, onListeningChange, autoStartSignal = 0, conversationMode = false, onStopListening }) {
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [isSupported, setIsSupported] = useState(true);
   const recognitionRef = useRef(null);
   const finalTranscriptRef = useRef('');
   const latestTranscriptRef = useRef('');
+  const manualStopRef = useRef(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -22,9 +23,16 @@ export default function VoiceInput({ onTranscriptReady, onListeningChange, autoS
     }
 
     const recognition = new SpeechRecognition();
-    recognition.continuous = true;
+    recognition.continuous = !conversationMode;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
+
+    recognition.onspeechend = () => {
+      if (!conversationMode) {
+        return;
+      }
+      recognition.stop();
+    };
 
     recognition.onstart = () => {
       setTranscript('');
@@ -59,9 +67,21 @@ export default function VoiceInput({ onTranscriptReady, onListeningChange, autoS
     };
 
     recognition.onend = () => {
+      const wasManualStop = manualStopRef.current;
+      manualStopRef.current = false;
+
       setIsListening(false);
       if (onListeningChange) {
         onListeningChange(false);
+      }
+
+      if (wasManualStop && onStopListening) {
+        onStopListening();
+      }
+
+      if (wasManualStop) {
+        // User manually stopped listening; do not process a command from partial transcript.
+        return;
       }
 
       const finalText = finalTranscriptRef.current.trim() || latestTranscriptRef.current.trim();
@@ -79,6 +99,13 @@ export default function VoiceInput({ onTranscriptReady, onListeningChange, autoS
 
     recognitionRef.current = recognition;
   }, [onTranscriptReady, onListeningChange]);
+
+  useEffect(() => {
+    if (!recognitionRef.current) {
+      return;
+    }
+    recognitionRef.current.continuous = !conversationMode;
+  }, [conversationMode]);
 
   useEffect(() => {
     if (!autoStartSignal || !recognitionRef.current || isListening) {
@@ -99,10 +126,12 @@ export default function VoiceInput({ onTranscriptReady, onListeningChange, autoS
     }
 
     if (isListening) {
+      manualStopRef.current = true;
       recognitionRef.current.stop();
       return;
     }
 
+    manualStopRef.current = false;
     recognitionRef.current.start();
   };
 
