@@ -1,20 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import VoiceInput from '../components/VoiceInput';
-import ActionPreview from '../components/ActionPreview';
-import ResponseBox from '../components/ResponseBox';
 import OrbyAvatar from '../components/OrbyAvatar';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:4000';
 
 export default function HomePage() {
-  const [parsedAction, setParsedAction] = useState(null);
-  const [response, setResponse] = useState(null);
+  const [chatLog, setChatLog] = useState([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [isListening, setIsListening] = useState(false);
-  const [conversationMode, setConversationMode] = useState(false);
-  const [voiceRepliesEnabled, setVoiceRepliesEnabled] = useState(true);
-  const [autoStartSignal, setAutoStartSignal] = useState(0);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const speechCancelledRef = useRef(false);
+  const voiceRef = useRef(null);
+  const chatEndRef = useRef(null);
   const [gmailStatus, setGmailStatus] = useState({
     connected: false,
     source: 'none',
@@ -23,78 +21,65 @@ export default function HomePage() {
   });
   const [conversationListeningEnabled, setConversationListeningEnabled] = useState(false);
 
-  const queueNextListeningCycle = useCallback(() => {
-    if (!conversationMode || !conversationListeningEnabled) {
-      return;
-    }
-    setAutoStartSignal((value) => value + 1);
-  }, [conversationMode, conversationListeningEnabled]);
-
-  const speakText = useCallback((text, onDone) => {
-    if (typeof window === 'undefined' || !window.speechSynthesis || !voiceRepliesEnabled || !text) {
-      if (onDone) {
-        onDone();
-      }
+  const speakText = useCallback((text) => {
+    if (typeof window === 'undefined' || !window.speechSynthesis || !text) {
       return;
     }
 
     window.speechSynthesis.cancel();
+    speechCancelledRef.current = false;
+    setIsSpeaking(true);
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 1;
     utterance.pitch = 1;
 
     utterance.onend = () => {
-      if (onDone) {
-        onDone();
-      }
+      setIsSpeaking(false);
     };
 
     utterance.onerror = () => {
-      if (onDone) {
-        onDone();
-      }
+      setIsSpeaking(false);
     };
 
     window.speechSynthesis.speak(utterance);
-  }, [voiceRepliesEnabled]);
-
-  const buildSpokenReply = useCallback((payload) => {
-    if (!payload) {
-      return 'Done.';
-    }
-
-    const base = payload.message || 'Done.';
-    if (!Array.isArray(payload.summary) || payload.summary.length === 0) {
-      return base;
-    }
-
-    const summaryText = payload.summary
-      .slice(0, 3)
-      .map((item) => `${item.from}: ${item.subject}`)
-      .join('. ');
-
-    return `${base}. Top emails: ${summaryText}.`;
   }, []);
 
-  const buildActionPreviewSpeech = useCallback((action) => {
-    if (!action) {
-      return 'I did not catch that command.';
+  const stopSpeaking = useCallback(() => {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      speechCancelledRef.current = true;
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
     }
-
-    if (action.intent === 'reply_email') {
-      return `I can send a reply to ${action.target || 'the contact'}. Do you want me to continue?`;
-    }
-
-    if (action.intent === 'schedule_meeting') {
-      return `I can schedule this meeting${action.target ? ` with ${action.target}` : ''}. Should I proceed?`;
-    }
-
-    if (action.intent === 'get_important_emails') {
-      return 'I can summarize your important inbox emails. Should I continue?';
-    }
-
-    return 'I could not map that request to an action yet.';
   }, []);
+
+  // Siri-like avatar tap handler
+  const handleAvatarTap = useCallback(() => {
+    // If Orby is speaking → stop speaking immediately
+    if (isSpeaking) {
+      stopSpeaking();
+      return;
+    }
+
+    // If already listening → stop listening (will auto-process)
+    if (isListening) {
+      if (voiceRef.current) {
+        voiceRef.current.stopListening();
+      }
+      return;
+    }
+
+    // If idle → start listening
+    if (voiceRef.current) {
+      voiceRef.current.startListening();
+    }
+  }, [isSpeaking, isListening, stopSpeaking]);
+
+  // Auto-scroll chat to bottom
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatLog]);
 
   const refreshGmailStatus = useCallback(async () => {
     try {
@@ -122,7 +107,7 @@ export default function HomePage() {
     const reason = url.searchParams.get('reason');
 
     if (gmail === 'connected') {
-      setResponse({ message: 'Gmail connected. Orby can now prioritize your inbox.' });
+      setChatLog((prev) => [...prev, { role: 'assistant', text: 'Gmail connected! I can now check your real inbox.' }]);
       refreshGmailStatus();
       url.searchParams.delete('gmail');
       url.searchParams.delete('reason');
@@ -140,135 +125,117 @@ export default function HomePage() {
 
   const statusText = useMemo(() => {
     if (loading) {
-      return 'Orby is working on it...';
+      return 'Processing...';
+    }
+
+    if (isSpeaking) {
+      return 'Tap to stop';
     }
 
     if (isListening) {
-      return 'Voice channel open';
+      return 'Listening...';
     }
 
-    if (conversationMode && !conversationListeningEnabled) {
-      return 'Conversation paused (stop listening pressed)';
-    }
-
-    return conversationMode ? 'Conversation mode is active' : 'Orby is ready to help!';
-  }, [loading, isListening, conversationMode, conversationListeningEnabled]);
-
-  const executeParsedAction = useCallback(async (action, shouldContinueConversation = false) => {
-    setLoading(true);
-    setError('');
-
-    try {
-      const result = await fetch(`${API_BASE_URL}/execute-action`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(action)
-      });
-
-      if (!result.ok) {
-        throw new Error('Orby could not complete that action.');
-      }
-
-      const payload = await result.json();
-      setResponse(payload);
-      setParsedAction(null);
-
-      speakText(buildSpokenReply(payload), () => {
-        if (shouldContinueConversation) {
-          queueNextListeningCycle();
-        }
-      });
-    } catch (err) {
-      const errMessage = err.message || 'Failed to execute action';
-      setError(errMessage);
-      speakText(errMessage, () => {
-        if (shouldContinueConversation) {
-          queueNextListeningCycle();
-        }
-      });
-    } finally {
-      setLoading(false);
-    }
-  }, [buildSpokenReply, queueNextListeningCycle, speakText]);
+    return 'Tap to speak';
+  }, [loading, isSpeaking, isListening]);
 
   const handleTranscriptReady = useCallback(async (text) => {
     setLoading(true);
     setError('');
-    setResponse(null);
+
+    // Add user message to chat log
+    const userEntry = { role: 'user', text };
+    setChatLog((prev) => [...prev, userEntry]);
+
+    // Build history for the API (last 10 messages for context)
+    const recentHistory = [...chatLog, userEntry]
+      .slice(-10)
+      .map((msg) => ({ role: msg.role === 'user' ? 'user' : 'assistant', content: msg.text }));
 
     try {
-      const result = await fetch(`${API_BASE_URL}/parse-command`, {
+      const res = await fetch(`${API_BASE_URL}/chat`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ text })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ history: recentHistory })
       });
 
-      if (!result.ok) {
-        throw new Error('Orby could not understand that command.');
+      if (!res.ok) {
+        throw new Error('Orby could not process that.');
       }
 
-      const action = await result.json();
-      if (conversationMode) {
-        await executeParsedAction(action, true);
-      } else {
-        setParsedAction(action);
-        speakText(buildActionPreviewSpeech(action));
+      const data = await res.json();
+
+      // Build the assistant chat entry
+      const entry = { role: 'assistant', text: data.reply };
+
+      // If there was an action result with email summaries, attach them
+      if (data.result && Array.isArray(data.result.summary)) {
+        entry.summary = data.result.summary;
       }
+
+      setChatLog((prev) => [...prev, entry]);
+
+      // Build spoken text — include top emails if we have summaries
+      let spoken = data.reply;
+      if (entry.summary && entry.summary.length > 0) {
+        const high = entry.summary.filter((e) => e.priority === 'high');
+        const top = high.length > 0 ? high : entry.summary;
+        const emailLines = top
+          .slice(0, 3)
+          .map((e) => `${e.from}: ${e.subject}`)
+          .join('. ');
+        const prefix = high.length > 0
+          ? `You have ${high.length} high priority email${high.length > 1 ? 's' : ''}`
+          : `Here are your top emails`;
+        spoken = `${spoken} ${prefix}. ${emailLines}.`;
+      }
+      speakText(spoken);
     } catch (err) {
-      setParsedAction(null);
-      const errMessage = err.message || 'Failed to parse command';
+      const errMessage = err.message || 'Something went wrong';
       setError(errMessage);
-      if (conversationMode) {
-        speakText(errMessage, () => queueNextListeningCycle());
-      }
+      setChatLog((prev) => [...prev, { role: 'assistant', text: "Sorry, I ran into an issue. Try again?" }]);
+      speakText("Sorry, I ran into an issue. Try again?");
     } finally {
       setLoading(false);
     }
-  }, [buildActionPreviewSpeech, conversationMode, executeParsedAction, queueNextListeningCycle, speakText]);
+  }, [chatLog, speakText]);
 
-  const handleConfirm = async () => {
-    if (!parsedAction) {
-      return;
-    }
-
-    await executeParsedAction(parsedAction, false);
-  };
-
-  const handleCancel = () => {
-    setParsedAction(null);
-    const cancelled = { message: 'Action cancelled. Orby is standing by.' };
-    setResponse(cancelled);
-    setError('');
-    speakText(cancelled.message);
-  };
-
-  const handleToggleConversationMode = () => {
-    setConversationMode((current) => {
-      const next = !current;
-      if (next) {
-        setConversationListeningEnabled(true);
-        speakText('Conversation mode enabled. Ask me about your inbox.', () => {
-          queueNextListeningCycle();
-        });
-      } else {
-        setConversationListeningEnabled(false);
-        speakText('Conversation mode disabled. You can use manual confirmation.');
-      }
-      return next;
-    });
+  const priorityBadge = (level) => {
+    const colors = { high: '#e74c3c', medium: '#f39c12', low: '#95a5a6' };
+    return (
+      <span
+        key={level}
+        style={{
+          background: colors[level] || '#95a5a6',
+          color: '#fff',
+          padding: '2px 8px',
+          borderRadius: '4px',
+          fontSize: '0.75rem',
+          fontWeight: 600,
+          marginRight: '6px',
+          textTransform: 'uppercase'
+        }}
+      >
+        {level}
+      </span>
+    );
   };
 
   return (
     <main className="splitPage">
       <section className="leftPane">
         <div className="leftPaneInner">
-          <h1>Orby - Your Voice Assistant</h1>
+          <h1>Orby</h1>
           <p className="subtitle">{statusText}</p>
-          <OrbyAvatar isListening={isListening} />
+          <div
+            className="avatarTapZone"
+            role="button"
+            tabIndex={0}
+            onClick={handleAvatarTap}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleAvatarTap(); }}
+          >
+            <OrbyAvatar isListening={isListening} isSpeaking={isSpeaking} isLoading={loading} />
+          </div>
         </div>
       </section>
 
@@ -300,52 +267,41 @@ export default function HomePage() {
             )}
           </section>
 
-          <section className="card modeCard">
-            <div className="modeRow">
-              <button
-                className={`toggleButton ${conversationMode ? 'on' : ''}`}
-                type="button"
-                onClick={handleToggleConversationMode}
-              >
-                {conversationMode ? 'Conversation Mode: On' : 'Conversation Mode: Off'}
-              </button>
-              <button
-                className={`toggleButton ${voiceRepliesEnabled ? 'on' : ''}`}
-                type="button"
-                onClick={() => setVoiceRepliesEnabled((value) => !value)}
-              >
-                {voiceRepliesEnabled ? 'Voice Replies: On' : 'Voice Replies: Off'}
-              </button>
-            </div>
-            <p className="helpText">
-              In conversation mode, Orby executes commands and speaks the response automatically.
-            </p>
-          </section>
-
           <VoiceInput
+            ref={voiceRef}
             onTranscriptReady={handleTranscriptReady}
             onListeningChange={setIsListening}
-            autoStartSignal={autoStartSignal}
-            conversationMode={conversationMode}
-            onStopListening={() => setConversationListeningEnabled(false)}
           />
 
-          {!conversationMode && (
-            <ActionPreview
-              action={parsedAction}
-              onConfirm={handleConfirm}
-              onCancel={handleCancel}
-              loading={loading}
-            />
-          )}
+          <section className="card chatCard">
+            <div className="chatThread">
+              {chatLog.length === 0 && (
+                <p className="chatEmpty">Tap the orb and say something!</p>
+              )}
+              {chatLog.map((msg, i) => (
+                <div key={i} className={`chatBubble ${msg.role}`}>
+                  <p>{msg.text}</p>
+                  {msg.summary && msg.summary.length > 0 && (
+                    <ul className="summaryList">
+                      {msg.summary.map((item, idx) => (
+                        <li key={`${item.from}-${idx}`}>
+                          {item.priority && priorityBadge(item.priority)}
+                          <strong>{item.from}</strong>: {item.subject} — {item.reason}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+              <div ref={chatEndRef} />
+            </div>
+          </section>
 
           {error && (
             <section className="card errorBox">
               <p>{error}</p>
             </section>
           )}
-
-          <ResponseBox response={response} />
         </div>
       </section>
     </main>

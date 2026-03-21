@@ -1,5 +1,5 @@
 const express = require('express');
-const { parseCommand } = require('../services/openai');
+const { parseCommand, chat } = require('../services/openai');
 const { executeAction } = require('../services/actionRouter');
 const {
   hasOAuthConfig,
@@ -78,6 +78,38 @@ router.post('/execute-action', async (req, res) => {
   } catch (error) {
     console.error('Execute action error:', error);
     return res.status(500).json({ error: 'Failed to execute action' });
+  }
+});
+
+router.post('/chat', async (req, res) => {
+  try {
+    const { history } = req.body;
+
+    if (!Array.isArray(history) || history.length === 0) {
+      return res.status(400).json({ error: 'history array is required' });
+    }
+
+    const chatResult = await chat(history);
+
+    // If the model decided on an action, execute it immediately
+    if (chatResult.action && chatResult.action.intent !== 'unknown') {
+      const actionResult = await executeAction(chatResult.action);
+      return res.json({
+        reply: chatResult.reply,
+        action: chatResult.action,
+        result: actionResult
+      });
+    }
+
+    // Pure conversation — no action
+    return res.json({
+      reply: chatResult.reply,
+      action: null,
+      result: null
+    });
+  } catch (error) {
+    console.error('Chat error:', error);
+    return res.status(500).json({ error: 'Failed to process chat' });
   }
 });
 

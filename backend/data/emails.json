@@ -1,12 +1,52 @@
 [
   {
-    "from": "Sarah",
-    "subject": "Project Update",
-    "snippet": "Can you send the latest update?"
+    "from": "Sarah Chen",
+    "subject": "URGENT: Client demo moved to tomorrow 9 AM",
+    "snippet": "Hey, the client just moved the demo to tomorrow morning at 9. We need the latest build deployed tonight. Can you handle this?"
   },
   {
-    "from": "Recruiter",
-    "subject": "Interview Scheduling",
-    "snippet": "Are you available tomorrow?"
+    "from": "Recruiter - Google",
+    "subject": "Interview Scheduling - Final Round",
+    "snippet": "Congratulations on passing the technical round! We'd like to schedule your final interview. Are you available this Thursday or Friday?"
+  },
+  {
+    "from": "GitHub",
+    "subject": "[orby-app] PR #42 merged",
+    "snippet": "Your pull request 'Add voice command parser' has been merged into main by @teammate."
+  },
+  {
+    "from": "AWS Billing",
+    "subject": "Your AWS bill for March is $247.89",
+    "snippet": "Your monthly billing statement is ready. Total charges: $247.89. This is 35% higher than last month."
+  },
+  {
+    "from": "Manager - Priya Sharma",
+    "subject": "Performance review next week",
+    "snippet": "Hi, just a reminder that your performance review is scheduled for next Wednesday at 2 PM. Please prepare your self-assessment."
+  },
+  {
+    "from": "LinkedIn",
+    "subject": "You have 5 new connection requests",
+    "snippet": "John Doe and 4 others want to connect with you on LinkedIn."
+  },
+  {
+    "from": "Teammate - Alex",
+    "subject": "Bug in production: login flow broken",
+    "snippet": "Users are reporting 500 errors on the login endpoint since the last deploy. Can you look into this ASAP?"
+  },
+  {
+    "from": "Stripe",
+    "subject": "Payment failed for subscription",
+    "snippet": "We were unable to process the payment for your Pro plan. Please update your payment method to avoid service interruption."
+  },
+  {
+    "from": "Newsletter - TechCrunch",
+    "subject": "Daily Digest: AI startups raise $2B this week",
+    "snippet": "Top stories: OpenAI launches new model, Google announces Gemini updates, and more."
+  },
+  {
+    "from": "Mom",
+    "subject": "Dinner this Sunday?",
+    "snippet": "Hey! Are you free this Sunday for dinner? Dad wants to grill. Let me know!"
   }
 ]
