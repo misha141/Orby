@@ -21,10 +21,14 @@ export default function HomePage() {
     oauthConfigured: false,
     mockMode: false
   });
+  const [conversationListeningEnabled, setConversationListeningEnabled] = useState(false);
 
   const queueNextListeningCycle = useCallback(() => {
+    if (!conversationMode || !conversationListeningEnabled) {
+      return;
+    }
     setAutoStartSignal((value) => value + 1);
-  }, []);
+  }, [conversationMode, conversationListeningEnabled]);
 
   const speakText = useCallback((text, onDone) => {
     if (typeof window === 'undefined' || !window.speechSynthesis || !voiceRepliesEnabled || !text) {
@@ -143,8 +147,12 @@ export default function HomePage() {
       return 'Voice channel open';
     }
 
+    if (conversationMode && !conversationListeningEnabled) {
+      return 'Conversation paused (stop listening pressed)';
+    }
+
     return conversationMode ? 'Conversation mode is active' : 'Orby is ready to help!';
-  }, [loading, isListening, conversationMode]);
+  }, [loading, isListening, conversationMode, conversationListeningEnabled]);
 
   const executeParsedAction = useCallback(async (action, shouldContinueConversation = false) => {
     setLoading(true);
@@ -242,10 +250,12 @@ export default function HomePage() {
     setConversationMode((current) => {
       const next = !current;
       if (next) {
+        setConversationListeningEnabled(true);
         speakText('Conversation mode enabled. Ask me about your inbox.', () => {
           queueNextListeningCycle();
         });
       } else {
+        setConversationListeningEnabled(false);
         speakText('Conversation mode disabled. You can use manual confirmation.');
       }
       return next;
@@ -316,6 +326,8 @@ export default function HomePage() {
             onTranscriptReady={handleTranscriptReady}
             onListeningChange={setIsListening}
             autoStartSignal={autoStartSignal}
+            conversationMode={conversationMode}
+            onStopListening={() => setConversationListeningEnabled(false)}
           />
 
           {!conversationMode && (
