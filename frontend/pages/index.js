@@ -8,6 +8,7 @@ export default function HomePage() {
   const [chatLog, setChatLog] = useState([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [pendingEmailReply, setPendingEmailReply] = useState(null);
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const speechCancelledRef = useRef(false);
@@ -19,8 +20,6 @@ export default function HomePage() {
     oauthConfigured: false,
     mockMode: false
   });
-  const [conversationListeningEnabled, setConversationListeningEnabled] = useState(false);
-
   const speakText = useCallback((text) => {
     if (typeof window === 'undefined' || !window.speechSynthesis || !text) {
       return;
@@ -173,6 +172,28 @@ export default function HomePage() {
         entry.summary = data.result.summary;
       }
 
+      if (data.result?.status === 'requires_confirmation' && data.action?.intent === 'reply_email') {
+        const options = Array.isArray(data.result.details?.options) ? data.result.details.options : [];
+        const preview = data.result.details?.preview || null;
+        const selectedOption = options[0] || null;
+        const pendingDraft = {
+          recipient: data.result.details?.target || data.action?.target || '',
+          message: data.result.details?.message || data.action?.message || '',
+          options,
+          selectedOption,
+          preview
+        };
+
+        entry.emailReplyPreview = pendingDraft;
+        setPendingEmailReply(pendingDraft);
+      } else {
+        setPendingEmailReply(null);
+      }
+
+      if (data.result?.details?.preview && data.result?.status === 'success' && data.action?.intent === 'reply_email') {
+        entry.sentEmailPreview = data.result.details.preview;
+      }
+
       setChatLog((prev) => [...prev, entry]);
 
       // Build spoken text — include top emails if we have summaries
@@ -200,6 +221,81 @@ export default function HomePage() {
     }
   }, [chatLog, speakText]);
 
+  const handleSelectEmailOption = useCallback((option) => {
+    setPendingEmailReply((current) => {
+      if (!current) {
+        return current;
+      }
+
+      return {
+        ...current,
+        selectedOption: option,
+        preview: {
+          toName: option.displayName,
+          toEmail: option.email,
+          subject: option.subject ? (/^re:/i.test(option.subject) ? option.subject : `Re: ${option.subject}`) : 'Reply from Orby',
+          body: current.message
+        }
+      };
+    });
+  }, []);
+
+  const handleConfirmEmailReply = useCallback(async () => {
+    if (!pendingEmailReply?.selectedOption) {
+      setError('Choose a recipient before sending the email.');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+
+    try {
+      const selected = pendingEmailReply.selectedOption;
+      const res = await fetch(`${API_BASE_URL}/confirm-email-reply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recipient: pendingEmailReply.recipient,
+          displayName: selected.displayName,
+          recipientEmail: selected.email,
+          subject: selected.subject,
+          threadId: selected.threadId,
+          message: pendingEmailReply.message
+        })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to send email.');
+      }
+
+      setChatLog((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          text: data.message || 'Email sent.',
+          sentEmailPreview: data.details?.preview || null
+        }
+      ]);
+      setPendingEmailReply(null);
+      speakText(data.message || 'Email sent.');
+    } catch (err) {
+      const errMessage = err.message || 'Failed to send email.';
+      setError(errMessage);
+      setChatLog((prev) => [...prev, { role: 'assistant', text: errMessage }]);
+      speakText(errMessage);
+    } finally {
+      setLoading(false);
+    }
+  }, [pendingEmailReply, speakText]);
+
+  const handleCancelEmailReply = useCallback(() => {
+    setPendingEmailReply(null);
+    setChatLog((prev) => [...prev, { role: 'assistant', text: 'Okay, I won’t send that email.' }]);
+    speakText('Okay, I will not send that email.');
+  }, [speakText]);
+
   const priorityBadge = (level) => {
     const colors = { high: '#e74c3c', medium: '#f39c12', low: '#95a5a6' };
     return (
@@ -219,6 +315,16 @@ export default function HomePage() {
         {level}
       </span>
     );
+  };
+
+  const actionButtonStyle = {
+    background: '#2f7fd3',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '999px',
+    padding: '10px 16px',
+    fontSize: '0.9rem',
+    cursor: 'pointer'
   };
 
   return (
@@ -290,6 +396,60 @@ export default function HomePage() {
                         </li>
                       ))}
                     </ul>
+                  )}
+                  {msg.emailReplyPreview && (
+                    <div className="transcriptBox" style={{ marginTop: '12px' }}>
+                      <p><strong>Draft Preview</strong></p>
+                      <p>To: {(pendingEmailReply?.preview || msg.emailReplyPreview.preview)?.toName} {(pendingEmailReply?.preview || msg.emailReplyPreview.preview)?.toEmail ? `(${(pendingEmailReply?.preview || msg.emailReplyPreview.preview).toEmail})` : ''}</p>
+                      <p>Subject: {(pendingEmailReply?.preview || msg.emailReplyPreview.preview)?.subject}</p>
+                      <p>Message: {(pendingEmailReply?.preview || msg.emailReplyPreview.preview)?.body}</p>
+                      {msg.emailReplyPreview.options?.length > 0 && (
+                        <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {msg.emailReplyPreview.options.map((option) => {
+                            const isSelected =
+                              pendingEmailReply?.selectedOption?.email === option.email &&
+                              pendingEmailReply?.selectedOption?.threadId === option.threadId;
+
+                            return (
+                              <button
+                                key={`${option.email}-${option.threadId}`}
+                                type="button"
+                                onClick={() => handleSelectEmailOption(option)}
+                                style={{
+                                  ...actionButtonStyle,
+                                  background: isSelected ? '#4cc9f0' : '#31456a',
+                                  textAlign: 'left'
+                                }}
+                              >
+                                {option.displayName} ({option.email})
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {pendingEmailReply && (
+                        <div style={{ marginTop: '12px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                          <button type="button" onClick={handleConfirmEmailReply} style={actionButtonStyle}>
+                            Send Email
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleCancelEmailReply}
+                            style={{ ...actionButtonStyle, background: '#5c677d' }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {msg.sentEmailPreview && (
+                    <div className="transcriptBox" style={{ marginTop: '12px' }}>
+                      <p><strong>Sent Email</strong></p>
+                      <p>To: {msg.sentEmailPreview.toName} ({msg.sentEmailPreview.toEmail})</p>
+                      <p>Subject: {msg.sentEmailPreview.subject}</p>
+                      <p>Message: {msg.sentEmailPreview.body}</p>
+                    </div>
                   )}
                 </div>
               ))}

@@ -11,6 +11,7 @@ const VoiceInput = forwardRef(function VoiceInput(
   const finalTranscriptRef = useRef('');
   const latestTranscriptRef = useRef('');
   const silenceTimerRef = useRef(null);
+  const manualStopRef = useRef(false);
 
   const SILENCE_TIMEOUT = 1800; // auto-stop after 1.8s of silence (Siri-like)
 
@@ -33,6 +34,7 @@ const VoiceInput = forwardRef(function VoiceInput(
   useImperativeHandle(ref, () => ({
     startListening() {
       if (recognitionRef.current && !isListening) {
+        manualStopRef.current = false;
         try {
           recognitionRef.current.start();
         } catch (_e) {
@@ -43,6 +45,7 @@ const VoiceInput = forwardRef(function VoiceInput(
     stopListening() {
       clearSilenceTimer();
       if (recognitionRef.current && isListening) {
+        manualStopRef.current = true;
         recognitionRef.current.stop();
       }
     }
@@ -62,14 +65,11 @@ const VoiceInput = forwardRef(function VoiceInput(
     }
 
     const recognition = new SpeechRecognition();
-    recognition.continuous = !conversationMode;
+    recognition.continuous = false;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
 
     recognition.onspeechend = () => {
-      if (!conversationMode) {
-        return;
-      }
       recognition.stop();
     };
 
@@ -117,11 +117,8 @@ const VoiceInput = forwardRef(function VoiceInput(
         onListeningChange(false);
       }
 
-      if (wasManualStop && onStopListening) {
-        onStopListening();
-      }
-
-      if (wasManualStop) {
+      if (manualStopRef.current) {
+        manualStopRef.current = false;
         // User manually stopped listening; do not process a command from partial transcript.
         return;
       }
@@ -144,15 +141,9 @@ const VoiceInput = forwardRef(function VoiceInput(
 
     return () => {
       clearSilenceTimer();
+      recognition.stop();
     };
   }, [onTranscriptReady, onListeningChange]);
-
-  useEffect(() => {
-    if (!recognitionRef.current) {
-      return;
-    }
-    recognitionRef.current.continuous = !conversationMode;
-  }, [conversationMode]);
 
   useEffect(() => {
     if (!autoStartSignal || !recognitionRef.current || isListening) {
@@ -165,22 +156,6 @@ const VoiceInput = forwardRef(function VoiceInput(
       // no-op
     }
   }, [autoStartSignal, isListening]);
-
-  const toggleListening = () => {
-    if (!recognitionRef.current) {
-      window.alert('Speech recognition is not supported in this browser.');
-      return;
-    }
-
-    if (isListening) {
-      clearSilenceTimer();
-      recognitionRef.current.stop();
-      return;
-    }
-
-    manualStopRef.current = false;
-    recognitionRef.current.start();
-  };
 
   return (
     <div className="card voiceCard">

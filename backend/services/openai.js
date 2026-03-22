@@ -1,79 +1,68 @@
-const OpenAI = require('openai');
+const { client, model } = require('./openaiClient');
+const {
+  toolDefinitions,
+  normalizeToolCall
+} = require('../tools/toolRegistry');
 
-const PARSE_PROMPT = `You are Orby, a voice-controlled productivity assistant.
+const PARSE_SYSTEM_PROMPT = `You are Orby, a voice-controlled productivity assistant.
 
-Convert the user command into structured JSON.
+Use the available tools whenever the user is clearly asking to perform an action.
+If the request does not match a tool, do not call a tool.
+For scheduling, do not call the scheduling tool unless you know whether the meeting is online or in person.`;
 
-Supported intents:
-
-* get_important_emails
-* reply_email
-* schedule_meeting
-
-Return JSON only with fields:
-intent, target, message, date, time`;
-
-const CHAT_SYSTEM_PROMPT = `You are Orby, a friendly and natural voice assistant for productivity. You help people manage their emails, schedule meetings, and stay organized.
-
-Your personality:
-- Warm, concise, and helpful — like a smart friend who keeps things brief
-- You speak naturally, never robotic
-- You keep responses SHORT (1-3 sentences max) since they'll be spoken aloud
-- You never say you're an AI or a language model
-
-When the user says something conversational (greetings, small talk, questions about you), respond naturally and briefly. Always steer gently toward how you can help.
-
-When the user asks you to DO something (check emails, send a reply, schedule a meeting), respond with a JSON block wrapped in <action> tags so the system can execute it:
-<action>{"intent": "get_important_emails"}</action>
-
-Supported actions:
-- get_important_emails — when user wants to check/read/prioritize/see their emails or inbox
-- reply_email — needs target (who) and message (what to say): <action>{"intent": "reply_email", "target": "Sarah", "message": "Got it, thanks!"}</action>
-- schedule_meeting — needs target, date, time: <action>{"intent": "schedule_meeting", "target": "team", "date": "tomorrow", "time": "3pm"}</action>
+const CHAT_SYSTEM_PROMPT = `You are Orby, a friendly and natural voice assistant for productivity.
 
 Rules:
-- If the user's intent is clear, include the <action> tag AND a brief natural response before it
-- If you need more info, just ask naturally (don't output an action tag)
-- NEVER output raw JSON without the <action> wrapper
-- Keep spoken text SHORT — these are voice replies`;
-
-const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
-
-const client = process.env.OPENAI_API_KEY
-  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  : null;
+- Keep spoken responses short and natural.
+- For actionable requests, use one of the provided tools instead of describing JSON in text.
+- Prioritize the user's MOST RECENT message over older context when choosing a tool.
+- If the latest message clearly switches tasks, ignore older tool context and follow the latest message.
+- If required information is missing, ask a brief follow-up question instead of guessing.
+- For meetings, you must know: person, date, time, and whether it is online or in person.
+- If meeting format is missing, ask a short follow-up like "Should I make that online or in person?" and do not call the scheduling tool yet.
+- For conversational messages, respond normally without calling a tool.
+- Never mention internal tool names unless the user asks.`;
 
 function normalizeParsedCommand(data = {}) {
   return {
+    tool: data.tool || '',
+    arguments: data.arguments || {},
     intent: data.intent || 'unknown',
     target: data.target || '',
     message: data.message || '',
     date: data.date || '',
-    time: data.time || ''
+    time: data.time || '',
+    meetingMode: data.meetingMode || ''
   };
 }
 
-function extractJson(text) {
-  if (!text || typeof text !== 'string') {
-    return null;
+function extractAssistantText(content) {
+  if (!content) {
+    return '';
   }
 
-  const trimmed = text.trim();
-
-  try {
-    return JSON.parse(trimmed);
-  } catch (_error) {
-    const match = trimmed.match(/\{[\s\S]*\}/);
-    if (!match) {
-      return null;
-    }
-
-    try {
-      return JSON.parse(match[0]);
-    } catch (_error2) {
-      return null;
-    }
+  if (typeof content === 'string') {
+    return content.trim();
   }
+
+  if (!Array.isArray(content)) {
+    return '';
+  }
+
+  return content
+    .map((part) => {
+      if (typeof part === 'string') {
+        return part;
+      }
+
+      if (part?.type === 'text') {
+        return part.text || '';
+      }
+
+      return '';
+    })
+    .join('')
+    .trim();
 }
 
 function fallbackParse(text = '') {
@@ -92,36 +81,229 @@ function fallbackParse(text = '') {
     input.includes('check my email') ||
     input.includes('check my mail')
   ) {
-    return normalizeParsedCommand({ intent: 'get_important_emails' });
+    return normalizeParsedCommand({
+      tool: 'get_important_emails',
+      intent: 'get_important_emails'
+    });
   }
 
   if (input.includes('reply')) {
     const targetMatch = text.match(/reply to\s+([\w\s]+)/i);
     const msgMatch = text.match(/saying\s+(.+)/i);
+    const recipient = targetMatch ? targetMatch[1].trim() : '';
+    const message = msgMatch ? msgMatch[1].trim() : '';
 
     return normalizeParsedCommand({
+      tool: 'reply_email',
+      arguments: {
+        recipient,
+        message
+      },
       intent: 'reply_email',
-      target: targetMatch ? targetMatch[1].trim() : '',
-      message: msgMatch ? msgMatch[1].trim() : ''
+      target: recipient,
+      message
     });
   }
 
   if (input.includes('send email') || input.includes('send an email') || input.includes('email to')) {
     const targetMatch = text.match(/(?:send (?:an )?email|email)\s+to\s+([\w\s]+)/i);
     const msgMatch = text.match(/(?:saying|that says|with message)\s+(.+)/i);
+    const recipient = targetMatch ? targetMatch[1].trim() : '';
+    const message = msgMatch ? msgMatch[1].trim() : '';
 
     return normalizeParsedCommand({
+      tool: 'reply_email',
+      arguments: {
+        recipient,
+        message
+      },
       intent: 'reply_email',
-      target: targetMatch ? targetMatch[1].trim() : '',
-      message: msgMatch ? msgMatch[1].trim() : ''
+      target: recipient,
+      message
     });
   }
 
   if (input.includes('schedule') || input.includes('meeting')) {
-    return normalizeParsedCommand({ intent: 'schedule_meeting' });
+    const targetMatch = text.match(/(?:schedule(?:\s+a)?\s+meeting\s+with|meeting\s+with)\s+(.+?)(?=\s+(?:today|tomorrow|next\s+\w+|on\s+\d|at\s+\d|at\s+noon|at\s+midnight|$))/i);
+    const dateMatch =
+      text.match(/\b(today|tomorrow|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i);
+    const timeMatch = text.match(/\b(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)|noon|midnight)\b/i);
+
+    return normalizeParsedCommand({
+      tool: 'schedule_meeting',
+      arguments: {
+        person: targetMatch ? targetMatch[1].trim() : '',
+        date: dateMatch ? dateMatch[1].trim() : '',
+        time: timeMatch ? timeMatch[1].trim() : '',
+        meetingMode: input.includes('online') || input.includes('virtual') || input.includes('google meet')
+          ? 'online'
+          : input.includes('in person') || input.includes('in-person')
+          ? 'in_person'
+          : '',
+        note: ''
+      },
+      intent: 'schedule_meeting',
+      target: targetMatch ? targetMatch[1].trim() : '',
+      date: dateMatch ? dateMatch[1].trim() : '',
+      time: timeMatch ? timeMatch[1].trim() : '',
+      meetingMode: input.includes('online') || input.includes('virtual') || input.includes('google meet')
+        ? 'online'
+        : input.includes('in person') || input.includes('in-person')
+        ? 'in_person'
+        : ''
+    });
   }
 
   return normalizeParsedCommand({ intent: 'unknown' });
+}
+
+function fallbackChat(text) {
+  const input = text.toLowerCase();
+  const parsed = fallbackParse(text);
+
+  if (parsed.intent !== 'unknown') {
+    const messages = {
+      get_important_emails: 'Sure, let me check your emails!',
+      reply_email: `Alright, I'll send that reply${parsed.target ? ` to ${parsed.target}` : ''}.`,
+      schedule_meeting: 'Got it, let me set that up.'
+    };
+
+    return {
+      reply: messages[parsed.intent] || 'On it!',
+      action: parsed
+    };
+  }
+
+  if (input.match(/\b(hi|hello|hey|howdy|sup|what's up)\b/)) {
+    return {
+      reply: 'Hey! I can check your emails, send replies, or schedule meetings. What do you need?',
+      action: null
+    };
+  }
+
+  if (input.match(/how are you|how('s| is) it going/)) {
+    return { reply: "I'm doing great, thanks for asking! What can I help you with?", action: null };
+  }
+
+  if (input.match(/what can you do|help me|what do you do/)) {
+    return {
+      reply: 'I can check your important emails, send replies, and schedule meetings. Just tell me what you need!',
+      action: null
+    };
+  }
+
+  if (input.match(/thank|thanks|thx/)) {
+    return { reply: "You're welcome! Let me know if you need anything else.", action: null };
+  }
+
+  if (input.match(/bye|goodbye|see you|later/)) {
+    return { reply: 'See you later! Tap me anytime you need help.', action: null };
+  }
+
+  return {
+    reply: "I'm not sure I understood that. I can check your emails, send replies, or schedule meetings.",
+    action: null
+  };
+}
+
+function buildActionReply(action) {
+  switch (action.intent) {
+    case 'get_important_emails':
+      return 'Sure, I\'ll check your important emails.';
+    case 'reply_email':
+      return action.target
+        ? `Okay, I\'ll send that reply to ${action.target}.`
+        : 'Okay, I\'ll send that reply.';
+    case 'schedule_meeting':
+      return action.target
+        ? `Okay, I\'ll schedule that ${action.meetingMode === 'online' ? 'online' : 'in person'} with ${action.target}.`
+        : `Okay, I\'ll schedule that ${action.meetingMode === 'online' ? 'online' : 'in person'}.`;
+    default:
+      return 'On it.';
+  }
+}
+
+function inferExpectedTool(text = '') {
+  const input = String(text || '').toLowerCase();
+
+  if (!input.trim()) {
+    return '';
+  }
+
+  if (
+    input === 'online' ||
+    input === 'virtual' ||
+    input === 'google meet' ||
+    input === 'in person' ||
+    input === 'in-person'
+  ) {
+    return 'schedule_meeting';
+  }
+
+  if (input.includes('schedule') || input.includes('meeting') || input.includes('calendar invite')) {
+    return 'schedule_meeting';
+  }
+
+  if (
+    input.includes('reply') ||
+    input.includes('send email') ||
+    input.includes('send an email') ||
+    input.includes('email to')
+  ) {
+    return 'reply_email';
+  }
+
+  if (
+    input.includes('important email') ||
+    input.includes('inbox') ||
+    input.includes('check my email') ||
+    input.includes('check my mail')
+  ) {
+    return 'get_important_emails';
+  }
+
+  return '';
+}
+
+async function replanFromLatestMessage(latestContent, expectedTool) {
+  const replanned = await parseCommand(latestContent);
+
+  if (!replanned || replanned.intent === 'unknown') {
+    return null;
+  }
+
+  if (expectedTool && replanned.tool && replanned.tool !== expectedTool) {
+    return null;
+  }
+
+  return replanned;
+}
+
+function requiresMeetingMode(action) {
+  return action?.tool === 'schedule_meeting' && !String(action?.meetingMode || '').trim();
+}
+
+async function planWithTools(messages, temperature = 0) {
+  const response = await client.chat.completions.create({
+    model,
+    messages,
+    tools: toolDefinitions,
+    tool_choice: 'auto',
+    temperature
+  });
+
+  const assistantMessage = response.choices?.[0]?.message || {};
+  const toolCall = assistantMessage.tool_calls?.[0] || null;
+  const normalizedAction = toolCall ? normalizeParsedCommand(normalizeToolCall(toolCall)) : null;
+  const reply = extractAssistantText(assistantMessage.content);
+
+  console.log('[orby] OpenAI assistant reply:', reply || '(empty)');
+  console.log('[orby] OpenAI selected tool call:', normalizedAction);
+
+  return {
+    reply,
+    action: normalizedAction
+  };
 }
 
 async function parseCommand(text) {
@@ -130,85 +312,19 @@ async function parseCommand(text) {
   }
 
   try {
-    const response = await client.responses.create({
-      model,
-      input: [
-        { role: 'system', content: PARSE_PROMPT },
+    const result = await planWithTools(
+      [
+        { role: 'system', content: PARSE_SYSTEM_PROMPT },
         { role: 'user', content: text }
       ],
-      temperature: 0
-    });
+      0
+    );
 
-    const rawText = response.output_text || '';
-    const parsed = extractJson(rawText);
-
-    if (!parsed) {
-      return fallbackParse(text);
-    }
-
-    return normalizeParsedCommand(parsed);
+    return result.action || fallbackParse(text);
   } catch (error) {
     console.warn('OpenAI parse failed, using fallback parser:', error.message);
     return fallbackParse(text);
   }
-}
-
-function extractAction(text) {
-  const match = text.match(/<action>([\s\S]*?)<\/action>/);
-  if (!match) {
-    return null;
-  }
-  try {
-    return JSON.parse(match[1].trim());
-  } catch (_e) {
-    return null;
-  }
-}
-
-function stripActionTags(text) {
-  return text.replace(/<action>[\s\S]*?<\/action>/g, '').trim();
-}
-
-function fallbackChat(text) {
-  const input = text.toLowerCase();
-
-  // Check if it's an actionable command
-  const parsed = fallbackParse(text);
-  if (parsed.intent !== 'unknown') {
-    const messages = {
-      get_important_emails: "Sure, let me check your emails!",
-      reply_email: `Alright, I'll send that reply${parsed.target ? ' to ' + parsed.target : ''}.`,
-      schedule_meeting: "Got it, let me set that up."
-    };
-
-    return {
-      reply: messages[parsed.intent] || "On it!",
-      action: parsed
-    };
-  }
-
-  // Conversational fallback when no OpenAI key
-  if (input.match(/\b(hi|hello|hey|howdy|sup|what's up)\b/)) {
-    return { reply: "Hey! I'm Orby, your voice assistant. I can check your emails, send replies, or schedule meetings. What do you need?", action: null };
-  }
-
-  if (input.match(/how are you|how('s| is) it going/)) {
-    return { reply: "I'm doing great, thanks for asking! What can I help you with?", action: null };
-  }
-
-  if (input.match(/what can you do|help me|what do you do/)) {
-    return { reply: "I can check your important emails, send replies, and schedule meetings. Just tell me what you need!", action: null };
-  }
-
-  if (input.match(/thank|thanks|thx/)) {
-    return { reply: "You're welcome! Let me know if you need anything else.", action: null };
-  }
-
-  if (input.match(/bye|goodbye|see you|later/)) {
-    return { reply: "See you later! Tap me anytime you need help.", action: null };
-  }
-
-  return { reply: "I'm not sure I understood that. I can check your emails, send replies, or schedule meetings — just ask!", action: null };
 }
 
 async function chat(history) {
@@ -218,24 +334,51 @@ async function chat(history) {
   }
 
   try {
-    const messages = [
-      { role: 'system', content: CHAT_SYSTEM_PROMPT },
-      ...history
-    ];
+    const latestMessage = history[history.length - 1];
+    const latestContent = latestMessage?.content || '';
+    const expectedTool = inferExpectedTool(latestContent);
+    const result = await planWithTools(
+      [
+        { role: 'system', content: CHAT_SYSTEM_PROMPT },
+        ...history
+      ],
+      0.4
+    );
 
-    const response = await client.responses.create({
-      model,
-      input: messages,
-      temperature: 0.7
-    });
+    let finalAction = result.action;
+    let finalReply = result.reply;
 
-    const rawText = response.output_text || '';
-    const action = extractAction(rawText);
-    const reply = stripActionTags(rawText) || (action ? "On it!" : "I'm not sure what you mean. Could you try again?");
+    if (expectedTool && (!finalAction || finalAction.tool !== expectedTool)) {
+      console.log('[orby] planner mismatch detected, replanning from latest message only:', {
+        expectedTool,
+        selectedTool: finalAction?.tool || ''
+      });
+
+      const replannedAction = await replanFromLatestMessage(latestContent, expectedTool);
+      if (replannedAction) {
+        console.log('[orby] replan succeeded:', replannedAction);
+        finalAction = replannedAction;
+        finalReply = '';
+      }
+    }
+
+    if (finalAction) {
+      if (requiresMeetingMode(finalAction)) {
+        return {
+          reply: 'Should I make that meeting online or in person?',
+          action: null
+        };
+      }
+
+      return {
+        reply: finalReply || buildActionReply(finalAction),
+        action: finalAction
+      };
+    }
 
     return {
-      reply,
-      action: action ? normalizeParsedCommand(action) : null
+      reply: result.reply || "I'm not sure what you mean. Could you try again?",
+      action: null
     };
   } catch (error) {
     console.warn('OpenAI chat failed, using fallback:', error.message);
@@ -244,58 +387,7 @@ async function chat(history) {
   }
 }
 
-async function summarizeImportantEmails(emails = []) {
-  if (!client) {
-    return emails.map((email, i) => ({
-      from: email.from,
-      subject: email.subject,
-      reason: email.snippet,
-      priority: i < 3 ? 'high' : 'low'
-    }));
-  }
-
-  const summaryPrompt = `You are Orby, a helpful productivity assistant.
-Analyze the following emails and prioritize them by importance.
-Rank every email as "high", "medium", or "low" priority.
-High = urgent action needed, time-sensitive, or from important contacts.
-Medium = useful but not urgent.
-Low = newsletters, social notifications, or purely informational.
-Sort the results so the highest priority emails come first.
-For each email, include a short one-sentence reason explaining why it matters.
-Return JSON only as an array of objects with keys: from, subject, reason, priority.`;
-
-  try {
-    const response = await client.responses.create({
-      model,
-      input: [
-        { role: 'system', content: summaryPrompt },
-        {
-          role: 'user',
-          content: JSON.stringify(emails)
-        }
-      ],
-      temperature: 0.2
-    });
-
-    const rawText = response.output_text || '';
-    const parsed = extractJson(rawText);
-
-    if (Array.isArray(parsed)) {
-      return parsed;
-    }
-  } catch (error) {
-    console.warn('OpenAI summarize failed, using fallback summary:', error.message);
-  }
-
-  return emails.map((email) => ({
-    from: email.from,
-    subject: email.subject,
-    reason: email.snippet
-  }));
-}
-
 module.exports = {
   parseCommand,
-  summarizeImportantEmails,
   chat
 };

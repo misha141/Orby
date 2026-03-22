@@ -11,7 +11,11 @@ const {
 const GOOGLE_AUTH_BASE = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
-const SCOPES = ['https://www.googleapis.com/auth/gmail.readonly'];
+const SCOPES = [
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/calendar.events'
+];
 
 function getOAuthConfig() {
   return {
@@ -148,6 +152,10 @@ async function getValidGmailAccessToken() {
   return refreshAccessToken();
 }
 
+async function getValidGoogleAccessToken() {
+  return getValidGmailAccessToken();
+}
+
 function getGmailConnectionStatus() {
   if (process.env.GMAIL_ACCESS_TOKEN) {
     return {
@@ -181,6 +189,7 @@ module.exports = {
   hasOAuthConfig,
   buildAuthUrl,
   handleGoogleCallback,
+  getValidGoogleAccessToken,
   getValidGmailAccessToken,
   getGmailConnectionStatus,
   buildFrontendRedirectUrl

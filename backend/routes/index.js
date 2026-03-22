@@ -1,6 +1,7 @@
 const express = require('express');
 const { parseCommand, chat } = require('../services/openai');
 const { executeAction } = require('../services/actionRouter');
+const { previewTool } = require('../tools/toolRegistry');
 const {
   hasOAuthConfig,
   buildAuthUrl,
@@ -64,6 +65,7 @@ router.post('/parse-command', async (req, res) => {
     }
 
     const structured = await parseCommand(text);
+    console.log('[orby] /parse-command result:', structured);
     return res.json(structured);
   } catch (error) {
     console.error('Parse command error:', error);
@@ -73,11 +75,37 @@ router.post('/parse-command', async (req, res) => {
 
 router.post('/execute-action', async (req, res) => {
   try {
+    console.log('[orby] /execute-action request:', req.body || {});
     const result = await executeAction(req.body || {});
+    console.log('[orby] /execute-action result:', result);
     return res.json(result);
   } catch (error) {
     console.error('Execute action error:', error);
     return res.status(500).json({ error: 'Failed to execute action' });
+  }
+});
+
+router.post('/confirm-email-reply', async (req, res) => {
+  try {
+    console.log('[orby] /confirm-email-reply request:', req.body || {});
+    const result = await executeAction({
+      intent: 'reply_email',
+      target: req.body?.recipient || req.body?.displayName || '',
+      message: req.body?.message || '',
+      arguments: {
+        recipient: req.body?.recipient || req.body?.displayName || '',
+        recipientEmail: req.body?.recipientEmail || '',
+        displayName: req.body?.displayName || '',
+        subject: req.body?.subject || '',
+        threadId: req.body?.threadId || '',
+        message: req.body?.message || ''
+      }
+    });
+    console.log('[orby] /confirm-email-reply result:', result);
+    return res.json(result);
+  } catch (error) {
+    console.error('Confirm email reply error:', error);
+    return res.status(500).json({ error: error.message || 'Failed to send email reply' });
   }
 });
 
@@ -89,13 +117,22 @@ router.post('/chat', async (req, res) => {
       return res.status(400).json({ error: 'history array is required' });
     }
 
+    const lastMessage = history[history.length - 1];
+    console.log('[orby] /chat last user message:', lastMessage);
+
     const chatResult = await chat(history);
+    console.log('[orby] /chat planner result:', chatResult);
 
     // If the model decided on an action, execute it immediately
     if (chatResult.action && chatResult.action.intent !== 'unknown') {
-      const actionResult = await executeAction(chatResult.action);
+      console.log('[orby] /chat executing action:', chatResult.action);
+      const actionResult =
+        chatResult.action.intent === 'reply_email'
+          ? await previewTool(chatResult.action.tool || chatResult.action.intent, chatResult.action.arguments || {})
+          : await executeAction(chatResult.action);
+      console.log('[orby] /chat action result:', actionResult);
       return res.json({
-        reply: chatResult.reply,
+        reply: actionResult?.status === 'requires_confirmation' ? actionResult.message : chatResult.reply,
         action: chatResult.action,
         result: actionResult
       });
