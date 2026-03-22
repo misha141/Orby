@@ -1,9 +1,9 @@
-const OpenAI = require('openai');
+const Anthropic = require('@anthropic-ai/sdk');
 
-const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+const model = process.env.CLAUDE_MODEL || 'claude-sonnet-4-5-20250929';
 
-const client = process.env.OPENAI_API_KEY
-  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+const client = process.env.ANTHROPIC_API_KEY
+  ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
   : null;
 
 module.exports = {

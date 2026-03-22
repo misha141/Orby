@@ -42,33 +42,63 @@ function normalizeParsedCommand(data = {}) {
   };
 }
 
+function convertToolDefinitionsForClaude(tools = []) {
+  return tools
+    .map((tool) => {
+      if (!tool?.function?.name) {
+        return null;
+      }
+
+      return {
+        name: tool.function.name,
+        description: tool.function.description || '',
+        input_schema: tool.function.parameters || {
+          type: 'object',
+          properties: {},
+          additionalProperties: false
+        }
+      };
+    })
+    .filter(Boolean);
+}
+
+function convertHistoryForClaude(history = []) {
+  return history
+    .filter((message) => message?.role === 'user' || message?.role === 'assistant')
+    .map((message) => ({
+      role: message.role,
+      content: String(message.content || '')
+    }));
+}
+
 function extractAssistantText(content) {
-  if (!content) {
-    return '';
-  }
-
-  if (typeof content === 'string') {
-    return content.trim();
-  }
-
   if (!Array.isArray(content)) {
     return '';
   }
 
   return content
-    .map((part) => {
-      if (typeof part === 'string') {
-        return part;
-      }
-
-      if (part?.type === 'text') {
-        return part.text || '';
-      }
-
-      return '';
-    })
-    .join('')
+    .filter((block) => block?.type === 'text')
+    .map((block) => block.text || '')
+    .join('\n')
     .trim();
+}
+
+function extractToolCall(content) {
+  if (!Array.isArray(content)) {
+    return null;
+  }
+
+  const toolUse = content.find((block) => block?.type === 'tool_use');
+  if (!toolUse) {
+    return null;
+  }
+
+  return {
+    function: {
+      name: toolUse.name || '',
+      arguments: JSON.stringify(toolUse.input || {})
+    }
+  };
 }
 
 function fallbackParse(text = '') {
@@ -239,8 +269,8 @@ function fallbackChat(text) {
     const messages = {
       get_important_emails: 'Sure, let me check your emails!',
       get_tasks: 'Sure, here are your tasks.',
-      create_task: parsed.target ? `Okay, I\'ll add "${parsed.target}" to your tasks.` : 'Okay, I\'ll add that to your tasks.',
-      delete_task: parsed.target ? `Okay, I\'ll delete "${parsed.target}" from your tasks.` : 'Okay, I\'ll delete that task.',
+      create_task: parsed.target ? `Okay, I'll add "${parsed.target}" to your tasks.` : 'Okay, I\'ll add that to your tasks.',
+      delete_task: parsed.target ? `Okay, I'll delete "${parsed.target}" from your tasks.` : 'Okay, I\'ll delete that task.',
       reply_email: `Alright, I'll send that reply${parsed.target ? ` to ${parsed.target}` : ''}.`,
       schedule_meeting: 'Got it, let me set that up.'
     };
@@ -253,7 +283,7 @@ function fallbackChat(text) {
 
   if (input.match(/\b(hi|hello|hey|howdy|sup|what's up)\b/)) {
     return {
-      reply: 'Hey! I can check your emails, send replies, or schedule meetings. What do you need?',
+      reply: 'Hey! I can check your emails, send replies, schedule meetings, and manage tasks. What do you need?',
       action: null
     };
   }
@@ -264,7 +294,7 @@ function fallbackChat(text) {
 
   if (input.match(/what can you do|help me|what do you do/)) {
     return {
-      reply: 'I can check your important emails, send replies, and schedule meetings. Just tell me what you need!',
+      reply: 'I can check your emails, send replies, manage tasks, and schedule meetings. Just tell me what you need!',
       action: null
     };
   }
@@ -278,7 +308,7 @@ function fallbackChat(text) {
   }
 
   return {
-    reply: "I'm not sure I understood that. I can check your emails, send replies, or schedule meetings.",
+    reply: "I'm not sure I understood that. I can check your emails, send replies, manage tasks, or schedule meetings.",
     action: null
   };
 }
@@ -289,22 +319,22 @@ function buildActionReply(action) {
       return 'Sure, I\'ll check your important emails.';
     case 'reply_email':
       return action.target
-        ? `Okay, I\'ll send that reply to ${action.target}.`
-        : 'Okay, I\'ll send that reply.';
+        ? `Okay, I'll prepare that reply to ${action.target}.`
+        : 'Okay, I\'ll prepare that reply.';
     case 'get_tasks':
       return 'Sure, I\'ll pull up your tasks.';
     case 'create_task':
       return action.target
-        ? `Okay, I\'ll add "${action.target}" to your tasks.`
+        ? `Okay, I'll add "${action.target}" to your tasks.`
         : 'Okay, I\'ll add that to your tasks.';
     case 'delete_task':
       return action.target
-        ? `Okay, I\'ll delete "${action.target}" from your tasks.`
+        ? `Okay, I'll delete "${action.target}" from your tasks.`
         : 'Okay, I\'ll delete that task.';
     case 'schedule_meeting':
       return action.target
-        ? `Okay, I\'ll schedule that ${action.meetingMode === 'online' ? 'online' : 'in person'} with ${action.target}.`
-        : `Okay, I\'ll schedule that ${action.meetingMode === 'online' ? 'online' : 'in person'}.`;
+        ? `Okay, I'll schedule that ${action.meetingMode === 'online' ? 'online' : 'in person'} with ${action.target}.`
+        : `Okay, I'll schedule that ${action.meetingMode === 'online' ? 'online' : 'in person'}.`;
     default:
       return 'On it.';
   }
@@ -385,22 +415,22 @@ function requiresMeetingMode(action) {
   return action?.tool === 'schedule_meeting' && !String(action?.meetingMode || '').trim();
 }
 
-async function planWithTools(messages, temperature = 0) {
-  const response = await client.chat.completions.create({
+async function planWithTools(messages, systemPrompt, temperature = 0) {
+  const response = await client.messages.create({
     model,
-    messages,
-    tools: toolDefinitions,
-    tool_choice: 'auto',
+    max_tokens: 1200,
+    system: systemPrompt,
+    messages: convertHistoryForClaude(messages),
+    tools: convertToolDefinitionsForClaude(toolDefinitions),
     temperature
   });
 
-  const assistantMessage = response.choices?.[0]?.message || {};
-  const toolCall = assistantMessage.tool_calls?.[0] || null;
+  const toolCall = extractToolCall(response.content);
   const normalizedAction = toolCall ? normalizeParsedCommand(normalizeToolCall(toolCall)) : null;
-  const reply = extractAssistantText(assistantMessage.content);
+  const reply = extractAssistantText(response.content);
 
-  console.log('[orby] OpenAI assistant reply:', reply || '(empty)');
-  console.log('[orby] OpenAI selected tool call:', normalizedAction);
+  console.log('[orby] Claude assistant reply:', reply || '(empty)');
+  console.log('[orby] Claude selected tool call:', normalizedAction);
 
   return {
     reply,
@@ -415,16 +445,14 @@ async function parseCommand(text) {
 
   try {
     const result = await planWithTools(
-      [
-        { role: 'system', content: PARSE_SYSTEM_PROMPT },
-        { role: 'user', content: text }
-      ],
+      [{ role: 'user', content: text }],
+      PARSE_SYSTEM_PROMPT,
       0
     );
 
     return result.action || fallbackParse(text);
   } catch (error) {
-    console.warn('OpenAI parse failed, using fallback parser:', error.message);
+    console.warn('Claude parse failed, using fallback parser:', error.message);
     return fallbackParse(text);
   }
 }
@@ -439,13 +467,7 @@ async function chat(history) {
     const latestMessage = history[history.length - 1];
     const latestContent = latestMessage?.content || '';
     const expectedTool = inferExpectedTool(latestContent);
-    const result = await planWithTools(
-      [
-        { role: 'system', content: CHAT_SYSTEM_PROMPT },
-        ...history
-      ],
-      0.4
-    );
+    const result = await planWithTools(history, CHAT_SYSTEM_PROMPT, 0.4);
 
     let finalAction = result.action;
     let finalReply = result.reply;
@@ -483,7 +505,7 @@ async function chat(history) {
       action: null
     };
   } catch (error) {
-    console.warn('OpenAI chat failed, using fallback:', error.message);
+    console.warn('Claude chat failed, using fallback:', error.message);
     const lastMsg = history[history.length - 1];
     return fallbackChat(lastMsg ? lastMsg.content : '');
   }

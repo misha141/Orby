@@ -44,10 +44,11 @@ For each email, include a short one-sentence reason explaining why it matters.
 Return JSON only as an array of objects with keys: from, subject, reason, priority.`;
 
   try {
-    const response = await client.responses.create({
+    const response = await client.messages.create({
       model,
-      input: [
-        { role: 'system', content: summaryPrompt },
+      max_tokens: 1200,
+      system: summaryPrompt,
+      messages: [
         {
           role: 'user',
           content: JSON.stringify(emails)
@@ -56,14 +57,19 @@ Return JSON only as an array of objects with keys: from, subject, reason, priori
       temperature: 0.2
     });
 
-    const rawText = response.output_text || '';
+    const rawText = Array.isArray(response.content)
+      ? response.content
+          .filter((block) => block.type === 'text')
+          .map((block) => block.text || '')
+          .join('\n')
+      : '';
     const parsed = extractJson(rawText);
 
     if (Array.isArray(parsed)) {
       return parsed;
     }
   } catch (error) {
-    console.warn('OpenAI summarize failed, using fallback summary:', error.message);
+    console.warn('Claude summarize failed, using fallback summary:', error.message);
   }
 
   return emails.map((email) => ({
