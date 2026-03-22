@@ -161,7 +161,7 @@ function fallbackParse(text = '') {
     });
   }
 
-  if (input.includes('reply')) {
+  if (input.includes('reply to')) {
     const targetMatch = text.match(/reply to\s+([\w\s]+)/i);
     const msgMatch = text.match(/saying\s+(.+)/i);
     const recipient = targetMatch ? targetMatch[1].trim() : '';
@@ -347,7 +347,7 @@ function inferExpectedTool(text = '') {
   }
 
   if (
-    input.includes('reply') ||
+    input.includes('reply to') ||
     input.includes('send email') ||
     input.includes('send an email') ||
     input.includes('email to')

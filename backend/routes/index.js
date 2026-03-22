@@ -27,11 +27,14 @@ router.post('/realtime/transcription-session', async (req, res) => {
       audio: {
         input: {
           noise_reduction: {
-            type: 'near_field'
+            type: process.env.OPENAI_TRANSCRIBE_NOISE_REDUCTION || 'far_field'
           },
           transcription: {
-            model: process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe',
-            language: 'en'
+            model: process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-transcribe',
+            language: process.env.OPENAI_TRANSCRIBE_LANGUAGE || 'en',
+            prompt:
+              process.env.OPENAI_TRANSCRIBE_PROMPT ||
+              'Common words include Orby, Gmail, Google Tasks, Neha, Misha, Michelle, calendar, assignment, inbox, reply, and meeting.'
           },
           turn_detection: {
             type: 'server_vad',
