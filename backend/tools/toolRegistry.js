@@ -1,7 +1,77 @@
 const { getImportantEmails, prepareReplyEmail, replyEmail } = require('../services/emailService');
 const { scheduleMeeting } = require('../services/calendarService');
+const { getTasks, createTask, deleteTask } = require('../services/tasksService');
 
 const toolDefinitions = [
+  {
+    type: 'function',
+    function: {
+      name: 'get_tasks',
+      description: 'Fetch the user\'s current Google Tasks or assignments from a task list.',
+      parameters: {
+        type: 'object',
+        properties: {
+          taskList: {
+            type: 'string',
+            description: 'Optional Google Task list name. Leave empty to use the default list.'
+          }
+        },
+        additionalProperties: false
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'create_task',
+      description: 'Create a new Google Task for an assignment, to-do, or reminder.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: {
+            type: 'string',
+            description: 'Short task title.'
+          },
+          notes: {
+            type: 'string',
+            description: 'Optional task details or assignment description.'
+          },
+          dueDate: {
+            type: 'string',
+            description: 'Optional due date in natural language, like tomorrow, Friday, or 2026-03-25.'
+          },
+          taskList: {
+            type: 'string',
+            description: 'Optional Google Task list name. Leave empty to use the default list.'
+          }
+        },
+        required: ['title'],
+        additionalProperties: false
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_task',
+      description: 'Delete an existing Google Task or assignment by matching its title.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: {
+            type: 'string',
+            description: 'Title or partial title of the task to delete.'
+          },
+          taskList: {
+            type: 'string',
+            description: 'Optional Google Task list name. Leave empty to use the default list.'
+          }
+        },
+        required: ['title'],
+        additionalProperties: false
+      }
+    }
+  },
   {
     type: 'function',
     function: {
@@ -74,6 +144,9 @@ const toolDefinitions = [
 ];
 
 const toolHandlers = {
+  get_tasks: getTasks,
+  create_task: createTask,
+  delete_task: deleteTask,
   get_important_emails: getImportantEmails,
   reply_email: replyEmail,
   schedule_meeting: scheduleMeeting
@@ -93,6 +166,22 @@ function sanitizeToolArguments(toolName, rawArgs = {}) {
         subject: safeString(rawArgs.subject),
         threadId: safeString(rawArgs.threadId),
         message: safeString(rawArgs.message)
+      };
+    case 'create_task':
+      return {
+        title: safeString(rawArgs.title),
+        notes: safeString(rawArgs.notes),
+        dueDate: safeString(rawArgs.dueDate),
+        taskList: safeString(rawArgs.taskList)
+      };
+    case 'delete_task':
+      return {
+        title: safeString(rawArgs.title),
+        taskList: safeString(rawArgs.taskList)
+      };
+    case 'get_tasks':
+      return {
+        taskList: safeString(rawArgs.taskList)
       };
     case 'schedule_meeting':
       return {
@@ -115,6 +204,30 @@ function actionFromTool(toolName, args = {}) {
         intent: 'reply_email',
         target: args.recipient || '',
         message: args.message || '',
+        date: '',
+        time: ''
+      };
+    case 'create_task':
+      return {
+        intent: 'create_task',
+        target: args.title || '',
+        message: args.notes || '',
+        date: args.dueDate || '',
+        time: ''
+      };
+    case 'get_tasks':
+      return {
+        intent: 'get_tasks',
+        target: args.taskList || '',
+        message: '',
+        date: '',
+        time: ''
+      };
+    case 'delete_task':
+      return {
+        intent: 'delete_task',
+        target: args.title || '',
+        message: '',
         date: '',
         time: ''
       };
@@ -228,6 +341,22 @@ function executeLegacyAction(command = {}) {
       ? {
           recipient: command.arguments?.recipient || command.target || '',
           message: command.arguments?.message || command.message || ''
+        }
+      : toolName === 'create_task'
+      ? {
+          title: command.arguments?.title || command.target || '',
+          notes: command.arguments?.notes || command.message || '',
+          dueDate: command.arguments?.dueDate || command.date || '',
+          taskList: command.arguments?.taskList || ''
+        }
+      : toolName === 'get_tasks'
+      ? {
+          taskList: command.arguments?.taskList || command.target || ''
+        }
+      : toolName === 'delete_task'
+      ? {
+          title: command.arguments?.title || command.target || '',
+          taskList: command.arguments?.taskList || ''
         }
       : toolName === 'schedule_meeting'
       ? {

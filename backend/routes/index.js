@@ -12,6 +12,65 @@ const {
 
 const router = express.Router();
 
+router.post('/realtime/transcription-session', async (req, res) => {
+  try {
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(500).json({ error: 'OPENAI_API_KEY is required for realtime transcription.' });
+    }
+
+    if (!req.body || typeof req.body !== 'string') {
+      return res.status(400).json({ error: 'SDP offer is required.' });
+    }
+
+    const sessionConfig = {
+      type: 'transcription',
+      audio: {
+        input: {
+          noise_reduction: {
+            type: 'near_field'
+          },
+          transcription: {
+            model: process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe',
+            language: 'en'
+          },
+          turn_detection: {
+            type: 'server_vad',
+            threshold: 0.5,
+            prefix_padding_ms: 300,
+            silence_duration_ms: 500
+          }
+        }
+      }
+    };
+
+    const formData = new FormData();
+    formData.set('sdp', req.body);
+    formData.set('session', JSON.stringify(sessionConfig));
+
+    const openAIResponse = await fetch('https://api.openai.com/v1/realtime/calls', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+      },
+      body: formData
+    });
+
+    const sdpAnswer = await openAIResponse.text();
+
+    if (!openAIResponse.ok) {
+      console.error('[orby] realtime transcription session error:', sdpAnswer);
+      return res.status(openAIResponse.status).send(sdpAnswer);
+    }
+
+    console.log('[orby] realtime transcription session created');
+    res.type('application/sdp');
+    return res.send(sdpAnswer);
+  } catch (error) {
+    console.error('Realtime transcription session error:', error);
+    return res.status(500).json({ error: 'Failed to create realtime transcription session' });
+  }
+});
+
 router.get('/auth/google/status', (_req, res) => {
   return res.json({
     ...getGmailConnectionStatus(),
@@ -132,7 +191,7 @@ router.post('/chat', async (req, res) => {
           : await executeAction(chatResult.action);
       console.log('[orby] /chat action result:', actionResult);
       return res.json({
-        reply: actionResult?.status === 'requires_confirmation' ? actionResult.message : chatResult.reply,
+        reply: actionResult?.message || chatResult.reply,
         action: chatResult.action,
         result: actionResult
       });

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react';
 
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:4000';
+
 const VoiceInput = forwardRef(function VoiceInput(
   { onTranscriptReady, onListeningChange, autoStartSignal = 0 },
   ref
@@ -7,47 +9,152 @@ const VoiceInput = forwardRef(function VoiceInput(
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [isSupported, setIsSupported] = useState(true);
-  const recognitionRef = useRef(null);
-  const finalTranscriptRef = useRef('');
-  const latestTranscriptRef = useRef('');
-  const silenceTimerRef = useRef(null);
+  const peerConnectionRef = useRef(null);
+  const dataChannelRef = useRef(null);
+  const mediaStreamRef = useRef(null);
   const manualStopRef = useRef(false);
+  const transcriptRef = useRef('');
 
-  const SILENCE_TIMEOUT = 1800; // auto-stop after 1.8s of silence (Siri-like)
+  const closeSession = () => {
+    if (dataChannelRef.current) {
+      try {
+        dataChannelRef.current.close();
+      } catch (_error) {
+        // no-op
+      }
+      dataChannelRef.current = null;
+    }
 
-  const clearSilenceTimer = () => {
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current);
-      silenceTimerRef.current = null;
+    if (peerConnectionRef.current) {
+      try {
+        peerConnectionRef.current.close();
+      } catch (_error) {
+        // no-op
+      }
+      peerConnectionRef.current = null;
+    }
+
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
     }
   };
 
-  const startSilenceTimer = () => {
-    clearSilenceTimer();
-    silenceTimerRef.current = setTimeout(() => {
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
+  const finishListening = () => {
+    setIsListening(false);
+    if (onListeningChange) {
+      onListeningChange(false);
+    }
+  };
+
+  const handleTranscriptComplete = (finalTranscript) => {
+    transcriptRef.current = finalTranscript.trim();
+    setTranscript(transcriptRef.current);
+    finishListening();
+    closeSession();
+
+    if (!manualStopRef.current && transcriptRef.current) {
+      onTranscriptReady(transcriptRef.current);
+    }
+
+    manualStopRef.current = false;
+  };
+
+  const startRealtimeTranscription = async () => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === 'undefined') {
+      setIsSupported(false);
+      return;
+    }
+
+    manualStopRef.current = false;
+    transcriptRef.current = '';
+    setTranscript('');
+    setIsListening(true);
+    if (onListeningChange) {
+      onListeningChange(true);
+    }
+
+    try {
+      const peerConnection = new RTCPeerConnection();
+      peerConnectionRef.current = peerConnection;
+
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+      mediaStreamRef.current = mediaStream;
+      mediaStream.getTracks().forEach((track) => peerConnection.addTrack(track, mediaStream));
+
+      const dataChannel = peerConnection.createDataChannel('oai-events');
+      dataChannelRef.current = dataChannel;
+
+      dataChannel.addEventListener('message', (event) => {
+        const message = JSON.parse(event.data);
+
+        if (message.type === 'conversation.item.input_audio_transcription.delta') {
+          transcriptRef.current = `${transcriptRef.current}${message.delta || ''}`;
+          setTranscript(transcriptRef.current.trim());
+        }
+
+        if (message.type === 'conversation.item.input_audio_transcription.completed') {
+          handleTranscriptComplete(message.transcript || transcriptRef.current);
+        }
+
+        if (message.type === 'input_audio_buffer.speech_started') {
+          setTranscript('');
+          transcriptRef.current = '';
+        }
+      });
+
+      dataChannel.addEventListener('close', () => {
+        finishListening();
+      });
+
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+
+      const sdpResponse = await fetch(`${API_BASE_URL}/realtime/transcription-session`, {
+        method: 'POST',
+        body: offer.sdp,
+        headers: {
+          'Content-Type': 'application/sdp'
+        }
+      });
+
+      if (!sdpResponse.ok) {
+        throw new Error('Failed to start realtime transcription session.');
       }
-    }, SILENCE_TIMEOUT);
+
+      const answer = {
+        type: 'answer',
+        sdp: await sdpResponse.text()
+      };
+
+      await peerConnection.setRemoteDescription(answer);
+    } catch (_error) {
+      closeSession();
+      finishListening();
+      setIsSupported(false);
+    }
   };
 
   useImperativeHandle(ref, () => ({
     startListening() {
-      if (recognitionRef.current && !isListening) {
-        manualStopRef.current = false;
-        try {
-          recognitionRef.current.start();
-        } catch (_e) {
-          // already started
-        }
+      if (!isListening) {
+        startRealtimeTranscription();
       }
     },
     stopListening() {
-      clearSilenceTimer();
-      if (recognitionRef.current && isListening) {
-        manualStopRef.current = true;
-        recognitionRef.current.stop();
-      }
+      manualStopRef.current = true;
+      closeSession();
+      finishListening();
     }
   }), [isListening]);
 
@@ -56,112 +163,28 @@ const VoiceInput = forwardRef(function VoiceInput(
       return;
     }
 
-    const SpeechRecognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
+    if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === 'undefined') {
       setIsSupported(false);
-      return;
     }
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-
-    recognition.onspeechend = () => {
-      recognition.stop();
-    };
-
-    recognition.onstart = () => {
-      setTranscript('');
-      latestTranscriptRef.current = '';
-      finalTranscriptRef.current = '';
-      setIsListening(true);
-      if (onListeningChange) {
-        onListeningChange(true);
-      }
-      // Start the silence timer immediately — if user says nothing, auto-stop
-      startSilenceTimer();
-    };
-
-    recognition.onresult = (event) => {
-      let interim = '';
-      let finalTextDelta = '';
-
-      for (let i = event.resultIndex; i < event.results.length; i += 1) {
-        const segment = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalTextDelta += `${segment} `;
-        } else {
-          interim += segment;
-        }
-      }
-
-      if (finalTextDelta) {
-        finalTranscriptRef.current = `${finalTranscriptRef.current} ${finalTextDelta}`.trim();
-      }
-
-      const combined = `${finalTranscriptRef.current} ${interim}`.trim();
-      setTranscript(combined);
-      latestTranscriptRef.current = combined;
-
-      // Reset the silence timer every time we get speech input
-      startSilenceTimer();
-    };
-
-    recognition.onend = () => {
-      clearSilenceTimer();
-      setIsListening(false);
-      if (onListeningChange) {
-        onListeningChange(false);
-      }
-
-      if (manualStopRef.current) {
-        manualStopRef.current = false;
-        // User manually stopped listening; do not process a command from partial transcript.
-        return;
-      }
-
-      const finalText = finalTranscriptRef.current.trim() || latestTranscriptRef.current.trim();
-      if (finalText) {
-        onTranscriptReady(finalText);
-      }
-    };
-
-    recognition.onerror = () => {
-      clearSilenceTimer();
-      setIsListening(false);
-      if (onListeningChange) {
-        onListeningChange(false);
-      }
-    };
-
-    recognitionRef.current = recognition;
 
     return () => {
-      clearSilenceTimer();
-      recognition.stop();
+      closeSession();
     };
-  }, [onTranscriptReady, onListeningChange]);
+  }, []);
 
   useEffect(() => {
-    if (!autoStartSignal || !recognitionRef.current || isListening) {
+    if (!autoStartSignal || isListening) {
       return;
     }
 
-    try {
-      recognitionRef.current.start();
-    } catch (_error) {
-      // no-op
-    }
+    startRealtimeTranscription();
   }, [autoStartSignal, isListening]);
 
   return (
     <div className="card voiceCard">
       {!isSupported && (
         <p className="helpText">
-          Speech recognition is not supported in this browser.
+          Realtime transcription is not supported in this browser.
         </p>
       )}
 

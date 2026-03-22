@@ -9,6 +9,7 @@ const port = process.env.PORT || 4000;
 
 app.use(cors());
 app.use(express.json());
+app.use(express.text({ type: ['application/sdp', 'text/plain'] }));
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', assistant: 'Orby is ready to help!' });

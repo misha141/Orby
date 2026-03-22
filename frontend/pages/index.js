@@ -171,6 +171,15 @@ export default function HomePage() {
       if (data.result && Array.isArray(data.result.summary)) {
         entry.summary = data.result.summary;
       }
+      if (data.result && Array.isArray(data.result.tasks)) {
+        entry.tasks = data.result.tasks;
+      }
+      if (data.result?.task) {
+        entry.createdTask = data.result.task;
+      }
+      if (data.result?.deletedTask) {
+        entry.deletedTask = data.result.deletedTask;
+      }
 
       if (data.result?.status === 'requires_confirmation' && data.action?.intent === 'reply_email') {
         const options = Array.isArray(data.result.details?.options) ? data.result.details.options : [];
@@ -209,6 +218,9 @@ export default function HomePage() {
           ? `You have ${high.length} high priority email${high.length > 1 ? 's' : ''}`
           : `Here are your top emails`;
         spoken = `${spoken} ${prefix}. ${emailLines}.`;
+      }
+      if (entry.tasks && entry.tasks.length > 0) {
+        spoken = `${spoken} ${entry.tasks.slice(0, 3).map((task) => task.title).join('. ')}.`;
       }
       speakText(spoken);
     } catch (err) {
@@ -396,6 +408,33 @@ export default function HomePage() {
                         </li>
                       ))}
                     </ul>
+                  )}
+                  {msg.tasks && msg.tasks.length > 0 && (
+                    <ul className="summaryList">
+                      {msg.tasks.map((task) => (
+                        <li key={task.id || task.title}>
+                          <strong>{task.title}</strong>
+                          {task.due ? ` — due ${new Date(task.due).toLocaleDateString()}` : ''}
+                          {task.notes ? ` — ${task.notes}` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {msg.createdTask && (
+                    <div className="transcriptBox" style={{ marginTop: '12px' }}>
+                      <p><strong>Added Task</strong></p>
+                      <p>Title: {msg.createdTask.title}</p>
+                      {msg.createdTask.due && <p>Due: {new Date(msg.createdTask.due).toLocaleDateString()}</p>}
+                      {msg.createdTask.notes && <p>Notes: {msg.createdTask.notes}</p>}
+                    </div>
+                  )}
+                  {msg.deletedTask && (
+                    <div className="transcriptBox" style={{ marginTop: '12px' }}>
+                      <p><strong>Deleted Task</strong></p>
+                      <p>Title: {msg.deletedTask.title}</p>
+                      {msg.deletedTask.due && <p>Due: {new Date(msg.deletedTask.due).toLocaleDateString()}</p>}
+                      {msg.deletedTask.notes && <p>Notes: {msg.deletedTask.notes}</p>}
+                    </div>
                   )}
                   {msg.emailReplyPreview && (
                     <div className="transcriptBox" style={{ marginTop: '12px' }}>

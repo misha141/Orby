@@ -8,7 +8,8 @@ const PARSE_SYSTEM_PROMPT = `You are Orby, a voice-controlled productivity assis
 
 Use the available tools whenever the user is clearly asking to perform an action.
 If the request does not match a tool, do not call a tool.
-For scheduling, do not call the scheduling tool unless you know whether the meeting is online or in person.`;
+For scheduling, do not call the scheduling tool unless you know whether the meeting is online or in person.
+For tasks, use create_task for new to-dos or assignments, get_tasks for showing the current task list, and delete_task for removing an existing task.`;
 
 const CHAT_SYSTEM_PROMPT = `You are Orby, a friendly and natural voice assistant for productivity.
 
@@ -20,6 +21,9 @@ Rules:
 - If required information is missing, ask a brief follow-up question instead of guessing.
 - For meetings, you must know: person, date, time, and whether it is online or in person.
 - If meeting format is missing, ask a short follow-up like "Should I make that online or in person?" and do not call the scheduling tool yet.
+- For task creation, you must know the task title. Due date and notes are optional.
+- For task deletion, you must know which task title to remove.
+- Use Google Tasks for assignment tracking and to-do list requests.
 - For conversational messages, respond normally without calling a tool.
 - Never mention internal tool names unless the user asks.`;
 
@@ -32,7 +36,9 @@ function normalizeParsedCommand(data = {}) {
     message: data.message || '',
     date: data.date || '',
     time: data.time || '',
-    meetingMode: data.meetingMode || ''
+    meetingMode: data.meetingMode || '',
+    taskList: data.taskList || '',
+    dueDate: data.dueDate || ''
   };
 }
 
@@ -67,6 +73,74 @@ function extractAssistantText(content) {
 
 function fallbackParse(text = '') {
   const input = text.toLowerCase();
+
+  if (
+    input.includes('to-do list') ||
+    input.includes('todo list') ||
+    input.includes('my tasks') ||
+    input.includes('my assignments') ||
+    input.includes('show tasks') ||
+    input.includes('show my tasks') ||
+    input.includes('what are my tasks') ||
+    input.includes('what is on my to-do')
+  ) {
+    return normalizeParsedCommand({
+      tool: 'get_tasks',
+      arguments: {},
+      intent: 'get_tasks'
+    });
+  }
+
+  if (
+    input.includes('delete task') ||
+    input.includes('remove task') ||
+    input.includes('delete assignment') ||
+    input.includes('remove assignment') ||
+    input.includes('delete my task') ||
+    input.includes('remove my task')
+  ) {
+    const titleMatch =
+      text.match(/(?:delete task|remove task|delete assignment|remove assignment|delete my task|remove my task)\s+(.+)/i);
+
+    return normalizeParsedCommand({
+      tool: 'delete_task',
+      arguments: {
+        title: titleMatch ? titleMatch[1].trim() : '',
+        taskList: ''
+      },
+      intent: 'delete_task',
+      target: titleMatch ? titleMatch[1].trim() : ''
+    });
+  }
+
+  if (
+    input.includes('add task') ||
+    input.includes('create task') ||
+    input.includes('add assignment') ||
+    input.includes('create assignment') ||
+    input.includes('add to my to-do') ||
+    input.includes('add to my todo') ||
+    input.includes('remind me to')
+  ) {
+    const titleMatch =
+      text.match(/(?:add task|create task|add assignment|create assignment|add to my to-?do(?: list)?|remind me to)\s+(.+?)(?=\s+(?:due\s+|by\s+|on\s+\d|today|tomorrow|next\s+\w+|$))/i);
+    const dueDateMatch =
+      text.match(/(?:due|by)\s+(today|tomorrow|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)/i);
+
+    return normalizeParsedCommand({
+      tool: 'create_task',
+      arguments: {
+        title: titleMatch ? titleMatch[1].trim() : '',
+        notes: '',
+        dueDate: dueDateMatch ? dueDateMatch[1].trim() : '',
+        taskList: ''
+      },
+      intent: 'create_task',
+      target: titleMatch ? titleMatch[1].trim() : '',
+      date: dueDateMatch ? dueDateMatch[1].trim() : '',
+      dueDate: dueDateMatch ? dueDateMatch[1].trim() : ''
+    });
+  }
 
   if (
     input.includes('important email') ||
@@ -164,6 +238,9 @@ function fallbackChat(text) {
   if (parsed.intent !== 'unknown') {
     const messages = {
       get_important_emails: 'Sure, let me check your emails!',
+      get_tasks: 'Sure, here are your tasks.',
+      create_task: parsed.target ? `Okay, I\'ll add "${parsed.target}" to your tasks.` : 'Okay, I\'ll add that to your tasks.',
+      delete_task: parsed.target ? `Okay, I\'ll delete "${parsed.target}" from your tasks.` : 'Okay, I\'ll delete that task.',
       reply_email: `Alright, I'll send that reply${parsed.target ? ` to ${parsed.target}` : ''}.`,
       schedule_meeting: 'Got it, let me set that up.'
     };
@@ -214,6 +291,16 @@ function buildActionReply(action) {
       return action.target
         ? `Okay, I\'ll send that reply to ${action.target}.`
         : 'Okay, I\'ll send that reply.';
+    case 'get_tasks':
+      return 'Sure, I\'ll pull up your tasks.';
+    case 'create_task':
+      return action.target
+        ? `Okay, I\'ll add "${action.target}" to your tasks.`
+        : 'Okay, I\'ll add that to your tasks.';
+    case 'delete_task':
+      return action.target
+        ? `Okay, I\'ll delete "${action.target}" from your tasks.`
+        : 'Okay, I\'ll delete that task.';
     case 'schedule_meeting':
       return action.target
         ? `Okay, I\'ll schedule that ${action.meetingMode === 'online' ? 'online' : 'in person'} with ${action.target}.`
@@ -242,6 +329,21 @@ function inferExpectedTool(text = '') {
 
   if (input.includes('schedule') || input.includes('meeting') || input.includes('calendar invite')) {
     return 'schedule_meeting';
+  }
+
+  if (
+    input.includes('to-do list') ||
+    input.includes('todo list') ||
+    input.includes('task') ||
+    input.includes('assignment')
+  ) {
+    if (input.includes('delete ') || input.includes('remove ')) {
+      return 'delete_task';
+    }
+
+    return input.includes('add ') || input.includes('create ') || input.includes('remind me')
+      ? 'create_task'
+      : 'get_tasks';
   }
 
   if (
