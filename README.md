@@ -1,6 +1,6 @@
 # Orby MVP (Voice-Driven AI Assistant)
 
-Orby is a voice-controlled productivity assistant MVP.
+Orby is a voice-driven AI assistant for Gmail, Calendar, and Tasks
 
 ## What is included
 
