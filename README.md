@@ -155,3 +155,45 @@ Orby will parse it as `get_important_emails`, fetch inbox emails (Gmail if confi
    - `GOOGLE_REDIRECT_URI` (same as above)
    - `FRONTEND_URL=http://localhost:3000`
 7. Restart backend, open Orby UI, click `Connect Gmail`.
+
+## HTTPS deployment with Nginx + Let's Encrypt
+
+This repo includes Nginx and Certbot in [`docker-compose.yml`](/Users/mishakumari/Downloads/Orby/docker-compose.yml) for a single-domain HTTPS setup:
+
+- `https://your-domain` -> frontend
+- `https://your-domain/api/*` -> backend
+- `https://your-domain/auth/google/callback` -> Google OAuth callback
+
+### Required DNS and AWS setup
+
+1. Point your domain's DNS `A` record to your EC2 public IP.
+2. Open security group ports `80` and `443`.
+
+### Required env
+
+Copy [`.env.docker.example`](/Users/mishakumari/Downloads/Orby/.env.docker.example) to `.env` and set:
+
+```env
+DOMAIN=orby.example.com
+SSL_EMAIL=you@example.com
+NEXT_PUBLIC_API_BASE_URL=https://orby.example.com/api
+FRONTEND_URL=https://orby.example.com
+```
+
+Update [`backend/.env`](/Users/mishakumari/Downloads/Orby/backend/.env) to use:
+
+```env
+FRONTEND_URL=https://orby.example.com
+GOOGLE_REDIRECT_URI=https://orby.example.com/auth/google/callback
+```
+
+### First certificate issuance
+
+Run:
+
+```bash
+./scripts/init-letsencrypt.sh
+docker compose up -d --build
+```
+
+The `certbot` container will keep renewing certificates after that.

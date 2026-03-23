@@ -1,6 +1,7 @@
 const express = require('express');
 const { parseCommand, chat } = require('../services/openai');
 const { executeAction } = require('../services/actionRouter');
+const { scheduleMeetingWithConfirmation } = require('../services/calendarService');
 const { previewTool } = require('../tools/toolRegistry');
 const {
   hasOAuthConfig,
@@ -171,6 +172,26 @@ router.post('/confirm-email-reply', async (req, res) => {
   }
 });
 
+router.post('/confirm-meeting', async (req, res) => {
+  try {
+    console.log('[orby] /confirm-meeting request:', req.body || {});
+    const result = await scheduleMeetingWithConfirmation({
+      person: req.body?.person || '',
+      date: req.body?.date || '',
+      time: req.body?.time || '',
+      meetingMode: req.body?.meetingMode || '',
+      note: req.body?.note || '',
+      attendeeEmail: req.body?.attendeeEmail || '',
+      attendeeName: req.body?.attendeeName || ''
+    });
+    console.log('[orby] /confirm-meeting result:', result);
+    return res.json(result);
+  } catch (error) {
+    console.error('Confirm meeting error:', error);
+    return res.status(500).json({ error: error.message || 'Failed to schedule meeting' });
+  }
+});
+
 router.post('/chat', async (req, res) => {
   try {
     const { history } = req.body;
@@ -189,7 +210,7 @@ router.post('/chat', async (req, res) => {
     if (chatResult.action && chatResult.action.intent !== 'unknown') {
       console.log('[orby] /chat executing action:', chatResult.action);
       const actionResult =
-        chatResult.action.intent === 'reply_email'
+        chatResult.action.intent === 'reply_email' || chatResult.action.intent === 'schedule_meeting'
           ? await previewTool(chatResult.action.tool || chatResult.action.intent, chatResult.action.arguments || {})
           : await executeAction(chatResult.action);
       console.log('[orby] /chat action result:', actionResult);

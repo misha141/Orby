@@ -1,0 +1,62 @@
+# Orby — frontend + backend for EC2 / VPS
+#
+# 1. backend/.env — secrets (see backend/.env.example). Do not commit.
+# 2. .env next to this file — build-time + URLs for Docker (see .env.docker.example).
+#
+# EC2: open security group TCP 80 and 443.
+# Google OAuth: GOOGLE_REDIRECT_URI and FRONTEND_URL must use your public https URL.
+
+services:
+  backend:
+    build: ./backend
+    container_name: orby-backend
+    env_file:
+      - ./backend/.env
+    environment:
+      PORT: "4000"
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:4000}
+        NEXT_PUBLIC_SPEECH_LANG: ${NEXT_PUBLIC_SPEECH_LANG:-en-IN}
+    container_name: orby-frontend
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: orby-nginx
+    depends_on:
+      - frontend
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    entrypoint: ["/bin/sh", "/opt/orby/nginx-entrypoint.sh"]
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - ./nginx/nginx-entrypoint.sh:/opt/orby/nginx-entrypoint.sh:ro
+      - certbot-www:/var/www/certbot
+      - letsencrypt:/etc/letsencrypt
+    restart: unless-stopped
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: orby-certbot
+    volumes:
+      - certbot-www:/var/www/certbot
+      - letsencrypt:/etc/letsencrypt
+    entrypoint: /bin/sh -c
+    command: "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet || true; sleep 12h & wait $$!; done"
+    restart: unless-stopped
+
+volumes:
+  letsencrypt:
+  certbot-www:

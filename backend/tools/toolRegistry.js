@@ -1,5 +1,5 @@
 const { getImportantEmails, prepareReplyEmail, replyEmail } = require('../services/emailService');
-const { scheduleMeeting } = require('../services/calendarService');
+const { prepareScheduleMeeting, scheduleMeeting } = require('../services/calendarService');
 const { getTasks, createTask, deleteTask } = require('../services/tasksService');
 
 const toolDefinitions = [
@@ -313,7 +313,7 @@ async function executeTool(toolName, args = {}) {
 }
 
 async function previewTool(toolName, args = {}) {
-  if (toolName !== 'reply_email') {
+  if (toolName !== 'reply_email' && toolName !== 'schedule_meeting') {
     return executeTool(toolName, args);
   }
 
@@ -324,7 +324,10 @@ async function previewTool(toolName, args = {}) {
     args: sanitizedArgs
   });
 
-  const result = await prepareReplyEmail(sanitizedArgs);
+  const result =
+    toolName === 'reply_email'
+      ? await prepareReplyEmail(sanitizedArgs)
+      : await prepareScheduleMeeting(sanitizedArgs);
 
   console.log('[orby] previewTool completed:', {
     toolName,

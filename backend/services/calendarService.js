@@ -92,6 +92,35 @@ async function resolveAttendee(person) {
   };
 }
 
+async function findAttendeeOptions(person) {
+  if (!person.trim() || !getGmailConnectionStatus().connected) {
+    return [];
+  }
+
+  const inboxEmails = await listInboxEmails();
+  const rankedMatches = inboxEmails
+    .map((email) => ({
+      displayName: email.senderName || person,
+      email: email.senderEmail || '',
+      score: scoreAttendeeMatch(person, email)
+    }))
+    .filter((entry) => entry.score > 0 && entry.email)
+    .sort((a, b) => b.score - a.score);
+
+  const deduped = [];
+  const seen = new Set();
+
+  for (const option of rankedMatches) {
+    const key = `${option.displayName}|${option.email}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(option);
+    }
+  }
+
+  return deduped.slice(0, 5);
+}
+
 function parseTimeString(timeText = '') {
   const normalized = String(timeText || '')
     .toLowerCase()
@@ -340,6 +369,173 @@ async function scheduleMeeting({ person = '', date = '', time = '', meetingMode 
   };
 }
 
+async function prepareScheduleMeeting({ person = '', date = '', time = '', meetingMode = '', note = '' } = {}) {
+  console.log('[orby] prepareScheduleMeeting triggered:', {
+    person,
+    date,
+    time,
+    meetingMode,
+    note
+  });
+
+  if (!person.trim()) {
+    throw new Error('Person is required to schedule a meeting');
+  }
+
+  if (!date.trim()) {
+    throw new Error('Date is required to schedule a meeting');
+  }
+
+  if (!time.trim()) {
+    throw new Error('Time is required to schedule a meeting');
+  }
+
+  if (!meetingMode.trim()) {
+    throw new Error('Meeting mode is required to schedule a meeting');
+  }
+
+  if (!getGmailConnectionStatus().connected) {
+    throw new Error('Google account is not connected. Please connect Gmail before scheduling.');
+  }
+
+  const schedule = parseMeetingSchedule({ date, time });
+  const options = await findAttendeeOptions(person);
+  const suggested = options[0] || null;
+
+  return {
+    status: 'requires_confirmation',
+    message: `Review the meeting details and confirm before I schedule it.${options.length ? ' Please choose the correct attendee first.' : ''}`,
+    details: {
+      target: person,
+      date,
+      time,
+      meetingMode,
+      note,
+      preview: {
+        person,
+        attendeeName: suggested?.displayName || '',
+        attendeeEmail: suggested?.email || '',
+        date,
+        time,
+        meetingMode,
+        note,
+        startDateTime: schedule.startDateTime,
+        endDateTime: schedule.endDateTime,
+        timeZone: schedule.timeZone
+      },
+      options: options.map((option) => ({
+        displayName: option.displayName,
+        email: option.email
+      }))
+    }
+  };
+}
+
+async function scheduleMeetingWithConfirmation({
+  person = '',
+  date = '',
+  time = '',
+  meetingMode = '',
+  note = '',
+  attendeeEmail = '',
+  attendeeName = ''
+} = {}) {
+  console.log('[orby] scheduleMeetingWithConfirmation triggered:', {
+    person,
+    date,
+    time,
+    meetingMode,
+    note,
+    attendeeEmail,
+    attendeeName
+  });
+
+  if (!person.trim()) {
+    throw new Error('Person is required to schedule a meeting');
+  }
+
+  if (!date.trim()) {
+    throw new Error('Date is required to schedule a meeting');
+  }
+
+  if (!time.trim()) {
+    throw new Error('Time is required to schedule a meeting');
+  }
+
+  if (!meetingMode.trim()) {
+    throw new Error('Meeting mode is required to schedule a meeting');
+  }
+
+  if (!getGmailConnectionStatus().connected) {
+    throw new Error('Google account is not connected. Please connect Gmail before scheduling.');
+  }
+
+  const schedule = parseMeetingSchedule({ date, time });
+  const attendee = attendeeEmail.trim()
+    ? { displayName: attendeeName || person, email: attendeeEmail.trim() }
+    : await resolveAttendee(person);
+
+  const eventPayload = {
+    summary: `Meeting with ${person}`,
+    description: note || `Scheduled by Orby for ${person}.`,
+    start: {
+      dateTime: schedule.startDateTime,
+      timeZone: schedule.timeZone
+    },
+    end: {
+      dateTime: schedule.endDateTime,
+      timeZone: schedule.timeZone
+    },
+    location: meetingMode === 'in_person' ? 'In person' : ''
+  };
+
+  if (attendee?.email) {
+    eventPayload.attendees = [
+      {
+        email: attendee.email,
+        displayName: attendee.displayName || person
+      }
+    ];
+  }
+
+  if (meetingMode === 'online') {
+    eventPayload.conferenceData = {
+      createRequest: {
+        requestId: crypto.randomUUID(),
+        conferenceSolutionKey: {
+          type: 'hangoutsMeet'
+        }
+      }
+    };
+  }
+
+  const event = await insertCalendarEvent(eventPayload);
+
+  return {
+    status: 'success',
+    message: `Meeting scheduled ${meetingMode === 'online' ? 'online' : 'in person'} with ${person}`,
+    details: {
+      target: person,
+      date,
+      time,
+      meetingMode,
+      note,
+      simulated: false,
+      provider: 'google-calendar',
+      attendeeEmail: attendee?.email || '',
+      attendeeName: attendee?.displayName || person,
+      timeZone: schedule.timeZone,
+      startDateTime: schedule.startDateTime,
+      endDateTime: schedule.endDateTime,
+      calendarEventId: event.id || '',
+      calendarEventLink: event.htmlLink || '',
+      googleMeetLink: event.hangoutLink || event.conferenceData?.entryPoints?.find((entry) => entry.entryPointType === 'video')?.uri || ''
+    }
+  };
+}
+
 module.exports = {
-  scheduleMeeting
+  prepareScheduleMeeting,
+  scheduleMeeting,
+  scheduleMeetingWithConfirmation
 };

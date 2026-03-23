@@ -17,6 +17,6 @@ app.get('/health', (_req, res) => {
 
 app.use('/', routes);
 
-app.listen(port, () => {
-  console.log(`Orby backend listening on http://localhost:${port}`);
+app.listen(port, '0.0.0.0', () => {
+  console.log(`Orby backend listening on http://0.0.0.0:${port}`);
 });

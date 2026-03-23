@@ -218,10 +218,7 @@ async function prepareReplyEmail({ recipient = '', message = '' } = {}) {
 
   return {
     status: 'requires_confirmation',
-    message:
-      options.length > 1
-        ? `I found a few matches for ${recipient}. Choose the right person before I send it.`
-        : `I found ${selectedRecipient.displayName}. Review the draft below before I send it.`,
+    message: `Review this draft and explicitly choose the right person before I send it.`,
     details: {
       target: recipient,
       message,

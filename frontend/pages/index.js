@@ -9,6 +9,7 @@ export default function HomePage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [pendingEmailReply, setPendingEmailReply] = useState(null);
+  const [pendingMeeting, setPendingMeeting] = useState(null);
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const speechCancelledRef = useRef(false);
@@ -184,7 +185,7 @@ export default function HomePage() {
       if (data.result?.status === 'requires_confirmation' && data.action?.intent === 'reply_email') {
         const options = Array.isArray(data.result.details?.options) ? data.result.details.options : [];
         const preview = data.result.details?.preview || null;
-        const selectedOption = options[0] || null;
+        const selectedOption = null;
         const pendingDraft = {
           recipient: data.result.details?.target || data.action?.target || '',
           message: data.result.details?.message || data.action?.message || '',
@@ -195,8 +196,26 @@ export default function HomePage() {
 
         entry.emailReplyPreview = pendingDraft;
         setPendingEmailReply(pendingDraft);
+        setPendingMeeting(null);
+      } else if (data.result?.status === 'requires_confirmation' && data.action?.intent === 'schedule_meeting') {
+        const options = Array.isArray(data.result.details?.options) ? data.result.details.options : [];
+        const pendingSchedule = {
+          person: data.result.details?.target || data.action?.target || '',
+          date: data.result.details?.date || data.action?.date || '',
+          time: data.result.details?.time || data.action?.time || '',
+          meetingMode: data.result.details?.meetingMode || data.action?.meetingMode || '',
+          note: data.result.details?.note || data.action?.message || '',
+          options,
+          selectedOption: null,
+          preview: data.result.details?.preview || null
+        };
+
+        entry.meetingPreview = pendingSchedule;
+        setPendingMeeting(pendingSchedule);
+        setPendingEmailReply(null);
       } else {
         setPendingEmailReply(null);
+        setPendingMeeting(null);
       }
 
       if (data.result?.details?.preview && data.result?.status === 'success' && data.action?.intent === 'reply_email') {
@@ -306,6 +325,81 @@ export default function HomePage() {
     setPendingEmailReply(null);
     setChatLog((prev) => [...prev, { role: 'assistant', text: 'Okay, I won’t send that email.' }]);
     speakText('Okay, I will not send that email.');
+  }, [speakText]);
+
+  const handleSelectMeetingOption = useCallback((option) => {
+    setPendingMeeting((current) => {
+      if (!current) {
+        return current;
+      }
+
+      return {
+        ...current,
+        selectedOption: option,
+        preview: {
+          ...current.preview,
+          attendeeName: option.displayName,
+          attendeeEmail: option.email
+        }
+      };
+    });
+  }, []);
+
+  const handleConfirmMeeting = useCallback(async () => {
+    if (pendingMeeting?.options?.length > 0 && !pendingMeeting?.selectedOption) {
+      setError('Choose the correct attendee before scheduling the meeting.');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+
+    try {
+      const selected = pendingMeeting?.selectedOption || null;
+      const res = await fetch(`${API_BASE_URL}/confirm-meeting`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          person: pendingMeeting?.person || '',
+          date: pendingMeeting?.date || '',
+          time: pendingMeeting?.time || '',
+          meetingMode: pendingMeeting?.meetingMode || '',
+          note: pendingMeeting?.note || '',
+          attendeeEmail: selected?.email || '',
+          attendeeName: selected?.displayName || ''
+        })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to schedule meeting.');
+      }
+
+      setChatLog((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          text: data.message || 'Meeting scheduled.',
+          scheduledMeetingPreview: data.details || null
+        }
+      ]);
+      setPendingMeeting(null);
+      speakText(data.message || 'Meeting scheduled.');
+    } catch (err) {
+      const errMessage = err.message || 'Failed to schedule meeting.';
+      setError(errMessage);
+      setChatLog((prev) => [...prev, { role: 'assistant', text: errMessage }]);
+      speakText(errMessage);
+    } finally {
+      setLoading(false);
+    }
+  }, [pendingMeeting, speakText]);
+
+  const handleCancelMeeting = useCallback(() => {
+    setPendingMeeting(null);
+    setChatLog((prev) => [...prev, { role: 'assistant', text: 'Okay, I won’t schedule that meeting.' }]);
+    speakText('Okay, I will not schedule that meeting.');
   }, [speakText]);
 
   const priorityBadge = (level) => {
@@ -439,6 +533,7 @@ export default function HomePage() {
                   {msg.emailReplyPreview && (
                     <div className="transcriptBox" style={{ marginTop: '12px' }}>
                       <p><strong>Draft Preview</strong></p>
+                      <p>Choose the correct recipient, then confirm before sending.</p>
                       <p>To: {(pendingEmailReply?.preview || msg.emailReplyPreview.preview)?.toName} {(pendingEmailReply?.preview || msg.emailReplyPreview.preview)?.toEmail ? `(${(pendingEmailReply?.preview || msg.emailReplyPreview.preview).toEmail})` : ''}</p>
                       <p>Subject: {(pendingEmailReply?.preview || msg.emailReplyPreview.preview)?.subject}</p>
                       <p>Message: {(pendingEmailReply?.preview || msg.emailReplyPreview.preview)?.body}</p>
@@ -469,11 +564,57 @@ export default function HomePage() {
                       {pendingEmailReply && (
                         <div style={{ marginTop: '12px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                           <button type="button" onClick={handleConfirmEmailReply} style={actionButtonStyle}>
-                            Send Email
+                            Confirm and Send
                           </button>
                           <button
                             type="button"
                             onClick={handleCancelEmailReply}
+                            style={{ ...actionButtonStyle, background: '#5c677d' }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {msg.meetingPreview && (
+                    <div className="transcriptBox" style={{ marginTop: '12px' }}>
+                      <p><strong>Meeting Preview</strong></p>
+                      <p>Review the details below before scheduling.</p>
+                      <p>With: {(pendingMeeting?.preview || msg.meetingPreview.preview)?.attendeeName || (pendingMeeting?.preview || msg.meetingPreview.preview)?.person} {(pendingMeeting?.preview || msg.meetingPreview.preview)?.attendeeEmail ? `(${(pendingMeeting?.preview || msg.meetingPreview.preview).attendeeEmail})` : ''}</p>
+                      <p>Date: {(pendingMeeting?.preview || msg.meetingPreview.preview)?.date}</p>
+                      <p>Time: {(pendingMeeting?.preview || msg.meetingPreview.preview)?.time}</p>
+                      <p>Mode: {(pendingMeeting?.preview || msg.meetingPreview.preview)?.meetingMode === 'online' ? 'Online' : 'In person'}</p>
+                      {msg.meetingPreview.options?.length > 0 && (
+                        <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {msg.meetingPreview.options.map((option) => {
+                            const isSelected = pendingMeeting?.selectedOption?.email === option.email;
+
+                            return (
+                              <button
+                                key={option.email}
+                                type="button"
+                                onClick={() => handleSelectMeetingOption(option)}
+                                style={{
+                                  ...actionButtonStyle,
+                                  background: isSelected ? '#4cc9f0' : '#31456a',
+                                  textAlign: 'left'
+                                }}
+                              >
+                                {option.displayName} ({option.email})
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {pendingMeeting && (
+                        <div style={{ marginTop: '12px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                          <button type="button" onClick={handleConfirmMeeting} style={actionButtonStyle}>
+                            Confirm and Schedule
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleCancelMeeting}
                             style={{ ...actionButtonStyle, background: '#5c677d' }}
                           >
                             Cancel
@@ -488,6 +629,15 @@ export default function HomePage() {
                       <p>To: {msg.sentEmailPreview.toName} ({msg.sentEmailPreview.toEmail})</p>
                       <p>Subject: {msg.sentEmailPreview.subject}</p>
                       <p>Message: {msg.sentEmailPreview.body}</p>
+                    </div>
+                  )}
+                  {msg.scheduledMeetingPreview && (
+                    <div className="transcriptBox" style={{ marginTop: '12px' }}>
+                      <p><strong>Scheduled Meeting</strong></p>
+                      <p>With: {msg.scheduledMeetingPreview.attendeeName || msg.scheduledMeetingPreview.target} {msg.scheduledMeetingPreview.attendeeEmail ? `(${msg.scheduledMeetingPreview.attendeeEmail})` : ''}</p>
+                      <p>Date: {msg.scheduledMeetingPreview.date}</p>
+                      <p>Time: {msg.scheduledMeetingPreview.time}</p>
+                      <p>Mode: {msg.scheduledMeetingPreview.meetingMode === 'online' ? 'Online' : 'In person'}</p>
                     </div>
                   )}
                 </div>

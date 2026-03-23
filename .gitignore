@@ -7,7 +7,13 @@ frontend/node_modules/
 .env
 .env.*
 !.env.example
+!.env.docker.example
 !.env.local.example
+
+# local EC2 deploy credentials
+scripts/deploy-ec2.env
+*.pem
+scripts/*.pem
 
 # build output
 .next/

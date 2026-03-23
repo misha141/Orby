@@ -9,6 +9,7 @@ const VoiceInput = forwardRef(function VoiceInput(
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [isSupported, setIsSupported] = useState(true);
+  const [errorMessage, setErrorMessage] = useState('');
   const peerConnectionRef = useRef(null);
   const dataChannelRef = useRef(null);
   const mediaStreamRef = useRef(null);
@@ -73,6 +74,7 @@ const VoiceInput = forwardRef(function VoiceInput(
     manualStopRef.current = false;
     transcriptRef.current = '';
     setTranscript('');
+    setErrorMessage('');
     setIsListening(true);
     if (onListeningChange) {
       onListeningChange(true);
@@ -96,10 +98,21 @@ const VoiceInput = forwardRef(function VoiceInput(
       dataChannelRef.current = dataChannel;
 
       dataChannel.addEventListener('message', (event) => {
-        const message = JSON.parse(event.data);
+        let message;
+
+        try {
+          message = JSON.parse(event.data);
+        } catch (_error) {
+          return;
+        }
 
         if (message.type === 'conversation.item.input_audio_transcription.delta') {
           transcriptRef.current = `${transcriptRef.current}${message.delta || ''}`;
+          setTranscript(transcriptRef.current.trim());
+        }
+
+        if (message.type === 'conversation.item.input_audio_transcription.segment') {
+          transcriptRef.current = message.text || transcriptRef.current;
           setTranscript(transcriptRef.current.trim());
         }
 
@@ -111,10 +124,24 @@ const VoiceInput = forwardRef(function VoiceInput(
           setTranscript('');
           transcriptRef.current = '';
         }
+
+        if (message.type === 'error') {
+          setErrorMessage(message.error?.message || 'Realtime transcription failed.');
+        }
       });
 
       dataChannel.addEventListener('close', () => {
         finishListening();
+      });
+
+      dataChannel.addEventListener('error', () => {
+        setErrorMessage('Realtime transcription channel closed unexpectedly.');
+      });
+
+      peerConnection.addEventListener('connectionstatechange', () => {
+        if (peerConnection.connectionState === 'failed' || peerConnection.connectionState === 'disconnected') {
+          setErrorMessage('Microphone connection was interrupted.');
+        }
       });
 
       const offer = await peerConnection.createOffer();
@@ -138,10 +165,10 @@ const VoiceInput = forwardRef(function VoiceInput(
       };
 
       await peerConnection.setRemoteDescription(answer);
-    } catch (_error) {
+    } catch (error) {
       closeSession();
       finishListening();
-      setIsSupported(false);
+      setErrorMessage(error?.message || 'Failed to start realtime transcription session.');
     }
   };
 
@@ -185,6 +212,12 @@ const VoiceInput = forwardRef(function VoiceInput(
       {!isSupported && (
         <p className="helpText">
           Realtime transcription is not supported in this browser.
+        </p>
+      )}
+
+      {errorMessage && isSupported && (
+        <p className="helpText">
+          {errorMessage}
         </p>
       )}
 
